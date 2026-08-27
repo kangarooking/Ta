@@ -13,11 +13,26 @@
 
 **AI 原生截图工具：截图、取字、AI 识图、翻译、长截图、钉图与标注，一步完成。**
 
-目前暂时仅支持 **macOS**；Windows 版本正在努力制作中。
+当前公开正式版支持 **macOS**。Windows 原生 Alpha 已开始开发，源码与构建说明见 [`windows/`](./windows/README.md)，尚未作为正式版本发布。
 
 [简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md)
 
 </div>
+
+## Change Log
+
+### 2026-08-27 18:56 — Windows 原生 Alpha 与轻量绿色版
+
+- 新增：`.NET 8 + WPF + Win32` Windows 独立工程，支持区域、全屏、重复区域和 FastStone 式活动窗口/对象捕获。
+- 新增：可自定义全局快捷键，区域截图默认 `Shift+A`，活动窗口截图默认 `Shift+W`，单项冲突不影响其他快捷键。
+- 新增：截图自动保存到本机临时目录并在剪贴板排他锁内复制完整文件路径。
+- 新增：结果窗口全屏适配、完整图片预览、AI 识别文字按钮、识别后自动复制文字与 `.vision.txt` 保存。
+- 新增：可编辑 Base URL、API Key、模型名称和识图任务指令；API Key 使用 Windows Credential Manager 加密存储。
+- 新增：原作者红色“拓”印章多尺寸 Windows ICO、单实例托盘、私密模式和可配置界面显隐策略。
+- 优化：框架依赖绿色单文件约 534KB，关闭主界面后主动归还工作集；发布脚本自动检测并安装依赖、测试和版本化打包。
+- 安全：限制截图/贴图/视觉请求内存预算，禁止远程自动保存目录，限制云端图片与响应体大小，修复剪贴板竞态与凭据回滚。
+
+---
 
 ![拓主界面](./docs/brand/Ta-home-preview.png)
 
@@ -262,6 +277,7 @@ Ta/
 ├── Tests/                     Core 与 App 测试
 ├── ocr-packs/paddleocr/       可选 PaddleOCR 增强包构建定义
 ├── scripts/                   构建、运行和增强包脚本
+├── windows/                   .NET 8 + WPF Windows 原生 Alpha
 └── docs/                      PRD、研究、验证记录与实现计划
 ```
 
@@ -313,7 +329,7 @@ Agent 能力仍会坚持明确授权、过程可见、结果可撤销。Ta 希�
 - [ ] AI 美化、智能隐私遮挡与多尺寸生成
 - [ ] 历史记录、搜索与结果重新复制
 - [ ] 可确认、可撤销的截图 Agent 工作流
-- [ ] Windows 版本
+- [ ] Windows 版本（Alpha 已完成区域/全屏截图、自动保存路径、可配置 AI 识图、快捷键与轻量托盘主链路）
 - [x] macOS 通用 DMG、ZIP 与校验文件
 - [ ] Developer ID 签名与 Apple notarization
 

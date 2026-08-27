@@ -11,6 +11,10 @@ xcuserdata/
 *.xcscmblueprint
 *.log
 artifacts/
+**/bin/
+**/obj/
+.vs/
+TestResults/
 
 # Local capture/article working files (not release documentation)
 /0[1-8]-*.png

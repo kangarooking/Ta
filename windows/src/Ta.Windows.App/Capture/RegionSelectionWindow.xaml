@@ -1,0 +1,39 @@
+<Window x:Class="Ta.Windows.App.Capture.RegionSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="#66000000"
+        ShowInTaskbar="False"
+        ShowActivated="True"
+        Topmost="True"
+        Cursor="Cross"
+        Title="拓 · 区域选择"
+        PreviewMouseLeftButtonDown="Window_OnMouseLeftButtonDown"
+        PreviewMouseMove="Window_OnMouseMove"
+        PreviewMouseLeftButtonUp="Window_OnMouseLeftButtonUp"
+        PreviewKeyDown="Window_OnKeyDown">
+    <Canvas x:Name="RootCanvas">
+        <Border x:Name="SelectionBorder"
+                Visibility="Collapsed"
+                BorderBrush="#FFFFFF"
+                BorderThickness="2"
+                Background="#10FFFFFF">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="6" ShadowDepth="0" Color="#000000" Opacity="0.7" />
+            </Border.Effect>
+        </Border>
+        <Border Canvas.Left="24"
+                Canvas.Top="24"
+                Padding="14,9"
+                CornerRadius="6"
+                Background="#E6111827">
+            <TextBlock x:Name="InstructionText"
+                       Text="拖动选择截图区域 · Esc 取消"
+                       Foreground="White"
+                       FontFamily="Segoe UI"
+                       FontSize="14" />
+        </Border>
+    </Canvas>
+</Window>

@@ -1,0 +1,140 @@
+﻿<Window x:Class="Ta.Windows.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="拓 · Ta Windows Alpha"
+        Width="1180"
+        Height="800"
+        MinWidth="900"
+        MinHeight="620"
+        WindowState="Maximized"
+        WindowStartupLocation="CenterScreen"
+        Background="#F8FAFC">
+    <Grid Margin="28">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="20" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="拓 · Ta"
+                       FontFamily="Segoe UI Semibold"
+                       FontSize="34"
+                       Foreground="{StaticResource TextBrush}" />
+            <TextBlock Margin="0,7,0,0"
+                       Text="Windows 原生截图与屏幕信息入口"
+                       FontSize="15"
+                       Foreground="{StaticResource MutedTextBrush}" />
+        </StackPanel>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" />
+                <ColumnDefinition Width="28" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <ScrollViewer Grid.Column="0"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="0,0,8,0">
+                <TextBlock Margin="0,0,0,14"
+                           Text="立即执行"
+                           FontFamily="Segoe UI Semibold"
+                           FontSize="16"
+                           Foreground="{StaticResource TextBrush}" />
+                <Button x:Name="SmartTextButton"
+                        Click="SmartTextButton_OnClick"
+                        Content="智能取字     Ctrl+Alt+Shift+1" />
+                <Button x:Name="RegionButton"
+                        Click="RegionButton_OnClick"
+                        Content="区域截图     Shift+A" />
+                <Button x:Name="WindowButton"
+                        Click="WindowButton_OnClick"
+                        Content="活动窗口截图     Shift+W" />
+                <Button x:Name="FullDesktopButton"
+                        Click="FullDesktopButton_OnClick"
+                        Content="全屏截图     Ctrl+Alt+Shift+3" />
+                <Button x:Name="RepeatButton"
+                        Click="RepeatButton_OnClick"
+                        Content="重复区域     Ctrl+Alt+Shift+4" />
+                <Button Click="RestoreResultButton_OnClick"
+                        Content="恢复最近结果" />
+                <Button Click="SettingsButton_OnClick"
+                        Content="设置快捷键与视觉模型" />
+
+                <CheckBox x:Name="PrivateModeCheckBox"
+                          Margin="2,16,0,0"
+                          FontSize="14"
+                          Foreground="{StaticResource TextBrush}"
+                          Checked="PrivateModeCheckBox_OnChanged"
+                          Unchecked="PrivateModeCheckBox_OnChanged"
+                          Content="本次使用私密截图模式" />
+                <TextBlock Margin="2,8,0,0"
+                           Text="私密模式不写历史、不调用云端。"
+                           FontSize="12"
+                           Foreground="{StaticResource MutedTextBrush}" />
+            </StackPanel>
+            </ScrollViewer>
+
+            <Border Grid.Column="2"
+                    Background="White"
+                    BorderBrush="#E4E7EC"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Padding="28">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Text="当前里程碑"
+                               TextAlignment="Center"
+                               FontFamily="Segoe UI Semibold"
+                               FontSize="18"
+                               Foreground="{StaticResource TextBrush}" />
+                    <Border Margin="0,22,0,20" BorderBrush="#EAECF0" BorderThickness="0,1,0,0" />
+                    <TextBlock Text="Windows 原生捕获"
+                               FontFamily="Segoe UI Semibold"
+                               FontSize="15"
+                               Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock Margin="0,8,0,18"
+                               TextWrapping="Wrap"
+                               LineHeight="22"
+                               Text="支持区域、活动窗口/对象、全屏和重复区域。活动窗口模式会随鼠标高亮窗口，单击后直接截图；按 Tab 可切换内部对象。"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                    <TextBlock Text="结果处理"
+                               FontFamily="Segoe UI Semibold"
+                               FontSize="15"
+                               Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock Margin="0,8,0,18"
+                               TextWrapping="Wrap"
+                               LineHeight="22"
+                               Text="截图结果可重新复制、导出 PNG/JPEG 或钉在桌面最上层。用户中途复制的新内容不会被迟到任务覆盖。"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                    <TextBlock Text="隐私边界"
+                               FontFamily="Segoe UI Semibold"
+                               FontSize="15"
+                               Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock Margin="0,8,0,0"
+                               TextWrapping="Wrap"
+                               LineHeight="22"
+                               Text="普通截图完全离线。只有主动触发智能识图时，当前选区的压缩副本才会发送到设置中的 Base URL 和模型；私密模式会阻止上传。"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3"
+                Margin="0,26,0,0"
+                Padding="14,11"
+                Background="#EFF6FF"
+                BorderBrush="#BFDBFE"
+                BorderThickness="1"
+                CornerRadius="8">
+            <TextBlock x:Name="StatusText"
+                       Text="已就绪。关闭主窗口后，全局快捷键仍然有效。"
+                       TextWrapping="Wrap"
+                       Foreground="#1D4ED8" />
+        </Border>
+    </Grid>
+</Window>
