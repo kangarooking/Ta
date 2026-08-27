@@ -20,6 +20,9 @@ public partial class MainWindow : System.Windows.Window
         Action<bool> privateModeChanged)
     {
         InitializeComponent();
+        var workArea = System.Windows.SystemParameters.WorkArea;
+        Width = Math.Min(1220, workArea.Width);
+        Height = Math.Min(793, workArea.Height);
         this.executeCapture = executeCapture ?? throw new ArgumentNullException(nameof(executeCapture));
         this.restoreLatestResult = restoreLatestResult ?? throw new ArgumentNullException(nameof(restoreLatestResult));
         this.openSettings = openSettings ?? throw new ArgumentNullException(nameof(openSettings));

@@ -2,11 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="拓 · Ta Windows Alpha"
-        Width="1180"
-        Height="800"
+        Width="1220"
+        Height="793"
         MinWidth="900"
         MinHeight="620"
-        WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="#F8FAFC">
     <Grid Margin="28">
