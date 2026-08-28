@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>截图标注</title>
+    <link rel="stylesheet" href="editor.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mode-group" aria-label="标注工具">
+          <button data-mode="pen" class="selected">画笔</button>
+          <button data-mode="rect">矩形</button>
+          <button data-mode="arrow">箭头</button>
+          <button data-mode="text">文字</button>
+        </div>
+        <label>颜色 <input id="color" type="color" value="#d6402f"></label>
+        <label>线宽 <input id="line-width" type="range" min="2" max="24" value="6"></label>
+        <button id="undo" class="subtle">撤销</button>
+        <button id="reset" class="subtle">重置</button>
+        <span class="spacer"></span>
+        <button data-action="copy" class="primary">复制</button>
+        <button data-action="pin" class="subtle">钉图</button>
+        <button data-action="save" class="subtle">保存</button>
+        <button data-action="close" class="subtle">关闭</button>
+      </header>
+      <section id="work-area"><canvas id="canvas" aria-label="截图标注画布"></canvas></section>
+      <output id="status" role="status"></output>
+    </main>
+    <script src="editor.js"></script>
+  </body>
+</html>

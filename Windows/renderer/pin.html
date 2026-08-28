@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>钉图</title>
+    <link rel="stylesheet" href="pin.css">
+  </head>
+  <body>
+    <main id="pin">
+      <div id="drag-region" title="拖动移动钉图">
+        <span>拓 · 钉图</span>
+        <div class="controls">
+          <button data-action="copy" title="复制图片">复制</button>
+          <button data-action="save" title="保存图片">保存</button>
+          <button data-action="opacity" title="降低透明度">◐</button>
+          <button data-action="close" title="关闭">×</button>
+        </div>
+      </div>
+      <img id="pinned-image" alt="已钉住的截图">
+    </main>
+    <script src="pin.js"></script>
+  </body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "name": "ta-windows",
+  "version": "0.1.0",
+  "description": "Windows desktop port of Ta, the AI-native screenshot tool.",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "node scripts/start-electron.cjs",
+    "test": "node --test",
+    "package:agent": "powershell -ExecutionPolicy Bypass -File scripts/package-agent-release.ps1",
+    "package": "npm run test && electron-builder --win nsis portable --x64"
+  },
+  "devDependencies": {
+    "electron": "40.1.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.kangarooking.ta.windows",
+    "productName": "Ta",
+    "artifactName": "Ta-${version}-win-${arch}.${ext}",
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "lib/**/*",
+      "renderer/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/agent-pipe-host.ps1"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true,
+    "electron@40.1.0": true
+  },
+  "dependencies": {
+    "tesseract.js": "^7.0.0"
+  }
+}

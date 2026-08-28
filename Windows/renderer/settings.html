@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>拓 Ta · 设置</title>
+    <link rel="stylesheet" href="settings.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span>拓</span><div><strong>拓 Ta</strong><small>WINDOWS PREVIEW</small></div></div>
+        <nav aria-label="设置分类">
+          <button data-tab="permissions"><b>⌾</b><span>权限</span></button>
+          <button data-tab="general"><b>⚙</b><span>常规</span></button>
+          <button data-tab="shortcuts"><b>⌘</b><span>快捷键</span></button>
+          <button data-tab="recognition"><b>▤</b><span>识别</span></button>
+          <button data-tab="translation"><b>文</b><span>翻译</span></button>
+          <button data-tab="models" class="active"><b>✦</b><span>AI 模型</span></button>
+          <button data-tab="agent"><b>▣</b><span>Agent</span></button>
+        </nav>
+        <div class="sidebar-footer">Windows 产品线<br><small>配置与密钥只属于当前用户</small></div>
+      </aside>
+      <section class="content-area">
+        <header class="topbar"><div><p id="section-kicker">MODEL CONFIGURATION</p><h1 id="section-title">AI 模型</h1></div><button id="capture-now" class="secondary">⌗ 开始框选</button></header>
+        <div id="panel" class="panel" aria-live="polite"></div>
+        <output id="toast" role="status"></output>
+      </section>
+    </main>
+    <script src="settings.js"></script>
+  </body>
+</html>
