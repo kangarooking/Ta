@@ -6,9 +6,10 @@
         Height="560"
         MinWidth="620"
         MinHeight="440"
-        WindowState="Maximized"
+        WindowState="Normal"
         WindowStartupLocation="CenterScreen"
-        Background="#F8FAFC">
+        Background="#F8FAFC"
+        PreviewKeyDown="Window_OnPreviewKeyDown">
     <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />

@@ -181,5 +181,16 @@ public partial class ResultWindow : System.Windows.Window
         }
     }
 
+    private void Window_OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Escape)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        Close();
+    }
+
     private void CloseButton_OnClick(object sender, System.Windows.RoutedEventArgs e) => Close();
 }
