@@ -1,0 +1,92 @@
+<Window x:Class="Ta.Windows.App.Results.ResultWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="截图结果"
+        Width="760"
+        Height="560"
+        MinWidth="620"
+        MinHeight="440"
+        WindowState="Normal"
+        WindowStartupLocation="CenterScreen"
+        Background="#F8FAFC"
+        PreviewKeyDown="Window_OnPreviewKeyDown">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="16" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="16" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <Button Click="CopyButton_OnClick" Content="复制图片" />
+            <Button x:Name="CopyVisionTextButton"
+                    Margin="10,0,0,10"
+                    Visibility="Collapsed"
+                    Click="CopyVisionTextButton_OnClick"
+                    Content="复制识图结果" />
+            <Button x:Name="CopyPathButton"
+                    Margin="10,0,0,10"
+                    Visibility="Collapsed"
+                    Click="CopyPathButton_OnClick"
+                    Content="复制文件路径" />
+            <Button x:Name="RecognizeTextButton"
+                    Margin="10,0,0,10"
+                    Click="RecognizeTextButton_OnClick"
+                    Content="AI 识别文字" />
+            <Button Margin="10,0,0,10" Click="SaveButton_OnClick" Content="保存文件" />
+            <Button Margin="10,0,0,10" Click="PinButton_OnClick" Content="钉在桌面" />
+            <Button Margin="10,0,0,10" Click="CloseButton_OnClick" Content="关闭" />
+        </StackPanel>
+
+        <Border Grid.Row="2"
+                Background="#111827"
+                BorderBrush="#D0D5DD"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12">
+            <Image x:Name="PreviewImage"
+                   Stretch="Uniform"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch" />
+        </Border>
+
+        <Border x:Name="VisionResultBorder"
+                Grid.Row="4"
+                Visibility="Collapsed"
+                Background="White"
+                BorderBrush="#D0D5DD"
+                BorderThickness="1"
+                CornerRadius="7"
+                Padding="12">
+            <StackPanel>
+                <TextBlock Text="AI 识图结果"
+                           TextAlignment="Center"
+                           FontFamily="Segoe UI Semibold"
+                           Foreground="#111827" />
+                <TextBox x:Name="VisionTextBox"
+                         Margin="0,10,0,0"
+                         MaxHeight="150"
+                         IsReadOnly="True"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         BorderThickness="0"
+                         Background="#F8FAFC"
+                         Padding="10" />
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="6"
+                Padding="12,9"
+                Background="#EFF6FF"
+                BorderBrush="#BFDBFE"
+                BorderThickness="1"
+                CornerRadius="7">
+            <TextBlock x:Name="StatusText" Foreground="#1D4ED8" TextWrapping="Wrap" />
+        </Border>
+    </Grid>
+</Window>

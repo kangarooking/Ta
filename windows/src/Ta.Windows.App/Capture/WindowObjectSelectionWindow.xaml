@@ -1,0 +1,39 @@
+<Window x:Class="Ta.Windows.App.Capture.WindowObjectSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="#12000000"
+        ShowInTaskbar="False"
+        ShowActivated="True"
+        Topmost="True"
+        Cursor="Hand"
+        Title="拓 · 窗口或对象选择"
+        PreviewMouseMove="Window_OnMouseMove"
+        PreviewMouseLeftButtonDown="Window_OnMouseLeftButtonDown"
+        PreviewKeyDown="Window_OnKeyDown">
+    <Canvas>
+        <Border x:Name="TargetBorder"
+                Visibility="Collapsed"
+                BorderBrush="#2563EB"
+                BorderThickness="3"
+                Background="#182563EB">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="8" ShadowDepth="0" Color="#2563EB" Opacity="0.8" />
+            </Border.Effect>
+        </Border>
+        <Border Canvas.Left="24"
+                Canvas.Top="24"
+                Padding="14,10"
+                CornerRadius="6"
+                Background="#ED111827">
+            <TextBlock x:Name="InstructionText"
+                       Text="移动鼠标选择活动窗口 · 单击选中并截图 · Tab 切换对象模式 · Esc 取消"
+                       Foreground="White"
+                       FontFamily="Segoe UI"
+                       FontSize="14"
+                       TextWrapping="Wrap" />
+        </Border>
+    </Canvas>
+</Window>

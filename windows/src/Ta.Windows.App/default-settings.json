@@ -1,0 +1,23 @@
+{
+  "shortcuts": {
+    "smartText": "Ctrl+Alt+Shift+1",
+    "region": "Shift+A",
+    "window": "Shift+W",
+    "fullDesktop": "Ctrl+Alt+Shift+3",
+    "repeatRegion": "Ctrl+Alt+Shift+4"
+  },
+  "output": {
+    "autoSave": true,
+    "showResultWindow": true,
+    "hideApplicationDuringCapture": false,
+    "temporaryDirectory": "%TEMP%\\Ta\\captures"
+  },
+  "vision": {
+    "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+    "model": "glm-4v-flash",
+    "taskPrompt": "请完整识别图片中的文字，尽量保持原有段落、换行、代码缩进、符号和表格结构，只输出识别结果，不要添加解释。",
+    "timeoutSeconds": 90,
+    "maximumImageDimension": 2400,
+    "jpegQuality": 90
+  }
+}
