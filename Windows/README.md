@@ -21,13 +21,19 @@
 
 这并不意味着这些功能被删除；它们分别对应 Windows OCR、Windows UI Automation、Credential Manager 和 Windows named pipe 实现。尚未完成的自动滚动长截图、窗口级 Agent 截图与云端 Agent 识图不会显示成可用。
 
-## 从源码运行
+## 构建环境
 
-需要 Windows 10/11 与 Node.js 22+：
+- Windows 10/11 与 Node.js 22+；
+- **Electron 必须使用 40.1.0**。该版本由 `package.json` 和 `package-lock.json` 锁定，未在其他 Electron 版本上验证；请勿替换为 `latest` 后直接发布。
+- 使用 `npm ci` 安装锁定依赖，确保本机、CI 与发布包使用同一套 Electron/构建工具版本。
+
+升级 Electron 时，必须同时更新 `package.json`、`package-lock.json` 与 `allowScripts` 条目，并重新运行测试和 Windows 打包验证。
+
+## 从源码运行
 
 ```powershell
 cd Windows
-npm install
+npm ci
 npm start
 ```
 
@@ -37,7 +43,7 @@ npm start
 
 ```powershell
 cd Windows
-npm install
+npm ci
 npm run package
 ```
 
