@@ -1,0 +1,8 @@
+{
+  "name": "ta",
+  "version": "0.1.0",
+  "bridgeProtocol": 1,
+  "requiresTaApp": ">=0.1.0",
+  "platform": "win32",
+  "requiresNode": ">=22"
+}

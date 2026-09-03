@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>框选截图</title>
+    <link rel="stylesheet" href="overlay.css">
+  </head>
+  <body>
+    <main id="capture" aria-label="截图选区">
+      <img id="screen-image" alt="当前屏幕截图">
+      <div id="dim" aria-hidden="true"></div>
+      <div id="selection" hidden><span id="selection-size"></span></div>
+      <section id="toolbar" hidden aria-label="截图操作">
+        <button data-action="copy" title="复制图片（Enter）">复制</button>
+        <button data-action="ocr" title="在本机使用 Windows OCR 取字">本地取字</button>
+        <button data-action="vision" title="使用已配置的视觉模型识图">识图</button>
+        <button data-action="translate" title="翻译为简体中文">翻译</button>
+        <button data-action="edit">标注</button>
+        <button data-action="pin">钉图</button>
+        <button data-action="save">保存</button>
+        <button data-action="cancel" class="quiet" title="取消（Esc）">×</button>
+      </section>
+      <p id="hint">拖动鼠标框选区域 · Esc 取消</p>
+      <output id="status" role="status"></output>
+    </main>
+    <script src="overlay.js"></script>
+  </body>
+</html>

@@ -13,7 +13,7 @@
 
 **AI 原生截图工具：截图、取字、AI 识图、翻译、长截图、钉图与标注，一步完成。**
 
-目前暂时仅支持 **macOS**；Windows 版本正在努力制作中。
+macOS 是当前完整功能版本；仓库现已包含可从源码运行的 [Windows 预览版](./Windows/README.md)，覆盖框选截图、复制/保存、钉图、基础标注、多服务商视觉能力、本地 OCR、named-pipe Agent Bridge，以及可校验的一键 CLI/Skill 安装包。自动滚动长截图、窗口级 Agent 截图等 Windows UI Automation 能力仍在迁移中。
 
 [简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md)
 
@@ -313,7 +313,7 @@ Agent 能力仍会坚持明确授权、过程可见、结果可撤销。Ta 希�
 - [ ] AI 美化、智能隐私遮挡与多尺寸生成
 - [ ] 历史记录、搜索与结果重新复制
 - [ ] 可确认、可撤销的截图 Agent 工作流
-- [ ] Windows 版本
+- [~] Windows 版本：本地 OCR、Agent Bridge 与 CLI/Skill 安装器已实现；自动滚动长截图仍在迁移
 - [x] macOS 通用 DMG、ZIP 与校验文件
 - [ ] Developer ID 签名与 Apple notarization
 
