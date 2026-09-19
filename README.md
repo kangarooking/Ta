@@ -8,12 +8,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-D6402F.svg)](./LICENSE)
 [![Platform: macOS 14+](https://img.shields.io/badge/macOS-14%2B-1A1A1A.svg)](https://www.apple.com/macos/)
+[![Platform: Windows 10 2004+](https://img.shields.io/badge/Windows-10%202004%2B-1A1A1A.svg)](./windows)
 [![Swift: 6.2](https://img.shields.io/badge/Swift-6.2-F05138.svg)](https://www.swift.org/)
 [![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-C98B2E.svg)](https://github.com/kangarooking/Ta/releases/tag/v1.0.1)
 
 **AI 原生截图工具：截图、取字、AI 识图、翻译、长截图、钉图与标注，一步完成。**
 
-目前暂时仅支持 **macOS**；Windows 版本正在努力制作中。
+macOS 14+ 已发布；**Windows 预览版**（.NET 8 移植，源码在 [`windows/`](./windows)）已可下载试用。
 
 [简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md)
 
@@ -175,6 +176,10 @@ ScreenCaptureKit 捕获（排除 Ta 自身窗口）
 
 安装包同时支持 Apple Silicon 与 Intel Mac。打开 DMG 后，把「拓」拖入 `Applications` 即可。当前版本尚未完成 Apple notarization；首次启动请在 Finder 中按住 Control 点击「拓」，选择“打开”，再确认一次。
 
+[**下载 Ta Windows 预览版（ZIP，免安装）**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+适用于 Windows 10 2004 及以上 / Windows 11，**自带 .NET 运行时、解压即用**：解压后先运行 `Ta.Shell.exe`（常驻托盘与全局快捷键），再运行 `Ta.Settings.exe`（面板与设置）。该包为 Windows 移植预览版，由 [`windows/`](./windows) 构建，尚未做代码签名，首次运行可能出现 SmartScreen 提示，选择“仍要运行”即可。
+
 ### 从源码构建
 
 ```bash
@@ -313,7 +318,7 @@ Agent 能力仍会坚持明确授权、过程可见、结果可撤销。Ta 希�
 - [ ] AI 美化、智能隐私遮挡与多尺寸生成
 - [ ] 历史记录、搜索与结果重新复制
 - [ ] 可确认、可撤销的截图 Agent 工作流
-- [ ] Windows 版本
+- [x] Windows 版本（.NET 8 移植，见 [`windows/`](./windows)）
 - [x] macOS 通用 DMG、ZIP 与校验文件
 - [ ] Developer ID 签名与 Apple notarization
 

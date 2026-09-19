@@ -8,12 +8,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-D6402F.svg)](./LICENSE)
 [![Platform: macOS 14+](https://img.shields.io/badge/macOS-14%2B-1A1A1A.svg)](https://www.apple.com/macos/)
+[![Platform: Windows 10 2004+](https://img.shields.io/badge/Windows-10%202004%2B-1A1A1A.svg)](./windows)
 [![Swift: 6.2](https://img.shields.io/badge/Swift-6.2-F05138.svg)](https://www.swift.org/)
 [![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-C98B2E.svg)](https://github.com/kangarooking/Ta/releases/tag/v1.0.1)
 
 **An AI-native screenshot tool: capture, OCR, understand images, translate, stitch, pin, and annotate in one flow.**
 
-Ta currently supports **macOS** only; a Windows version is in development.
+Ta ships for macOS 14+ today, and a **Windows preview** (a .NET 8 port, source in [`windows/`](./windows)) is available for download.
 
 [简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md)
 
@@ -175,6 +176,10 @@ If the clipboard changes while recognition is running, Ta will not overwrite the
 
 The installer supports both Apple Silicon and Intel Macs. Open the DMG and drag 「拓」 into `Applications`. This build is not yet Apple-notarized; on first launch, Control-click the app in Finder, choose **Open**, and confirm once more.
 
+[**Download Ta for Windows (Preview, ZIP, no installer)**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+For Windows 10 version 2004 or later, and Windows 11. The package **bundles the .NET runtime and needs no installation**: after unzipping, run `Ta.Shell.exe` first (tray icon and global shortcuts), then `Ta.Settings.exe` (panel and settings). It is built from [`windows/`](./windows) and is not code-signed, so SmartScreen may warn on first launch — choose **Run anyway**.
+
 ### Build from source
 
 ```bash
@@ -304,7 +309,7 @@ Agent features will remain permission-based, visible, and reversible. Ta should 
 - [ ] AI beautification, smart privacy redaction, and multi-size generation
 - [ ] History, search, and result re-copy
 - [ ] Confirmable and reversible screenshot Agent workflows
-- [ ] Windows version
+- [x] Windows version (.NET 8 port, see [`windows/`](./windows))
 - [x] Universal macOS DMG, ZIP, and checksums
 - [ ] Developer ID signing and Apple notarization
 
