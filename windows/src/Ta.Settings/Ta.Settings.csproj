@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Ta.Settings</RootNamespace>
+    <AssemblyName>Ta.Settings</AssemblyName>
+
+    <!--
+      整个设置界面全部用 C# 代码构造（不使用任何 .xaml 文件）。
+      理由：
+        1. macOS 侧 SettingsView.swift / ModelSettingsView.swift 等本身就是
+           「一个文件 = 一个视图」的结构，逐文件直译最不容易漏字段；
+        2. XAML 解析错误只会在运行时炸，代码构造在编译期就能查出来；
+        3. 设置窗口要能被 `dotnet run` 无 GUI 资源文件依赖地跑起来做冒烟。
+      因此这里显式指定入口点，避免 SDK 去找 App.xaml。
+    -->
+    <StartupObject>Ta.Settings.Program</StartupObject>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+      <!--
+        exe 图标。它是二进制产物、仓库不提交；用 tools/make_appicon.py 从
+        Resources/Brand/Ta-AppIcon.png 生成。缺失时不设图标（仍能正常构建）。
+      -->
+      <ApplicationIcon Condition="Exists('..\..\assets\app.ico')">..\..\assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      全局 using：设置界面几乎每个文件都要用 WPF 基础类型与领域模型，
+      统一声明可以少写几十行样板。SwiftUI 那边是 import AppKit / import SwiftUI 一次搞定。
+    -->
+    <Using Include="System.Windows" />
+    <Using Include="System.Windows.Media" />
+    <Using Include="System.Windows.Controls.Primitives" />
+    <Using Include="Ta.Settings.Core" />
+    <Using Include="Ta.Settings.Services" />
+  </ItemGroup>
+
+</Project>

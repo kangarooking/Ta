@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.Capture</RootNamespace>
+    <!--
+      读回 GPU 纹理时要按字节遍历 BGRA 行，用 unsafe 指针逐字节拷贝；
+      这是整条链路里唯一一处需要指针的地方，其余全部托管。
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      只依赖 Ta.Core：捕获层的对外契约（IScreenCapture / RgbaBitmap / FrozenDisplayCropper）
+      全在那里。刻意**不**引用 Ta.Platform —— 它的 Win32 声明是 internal，
+      本来就跨程序集不可用，留着只是让构建多绑一个 agent 负责的项目。
+    -->
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      仅供 tests\Ta.Capture.Probe 的真机诊断程序访问 WinRT 互操作内部件
+      （WgcGuids / ComInterop），用于核对两个无法从 winmd 读出的原生 COM GUID：
+      IGraphicsCaptureItemInterop 与 IDirect3DDxgiInterfaceAccess。
+      Ta.Capture.Tests 不需要它 —— 那边的用例全部走 public 表面。
+    -->
+    <InternalsVisibleTo Include="Ta.Capture.Probe" />
+  </ItemGroup>
+</Project>

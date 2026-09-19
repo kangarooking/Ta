@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.AgentBridge</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      只依赖契约层：Ta.Core.Agent（AnnotationRecipe / AnnotationColor / AgentFrameCodec）
+      与 Ta.Core.Capture.IScreenCapture（捕获抽象）。
+      信封 / 方法 / 错误码等其余契约类型由本项目的 Protocol\ 复刻 ——
+      它们源自 Mac 版 TaAgentContracts，而该命名空间不在本次移植范围（不可改动），
+      故在桥服务端内部重建。
+    -->
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+  </ItemGroup>
+</Project>

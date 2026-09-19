@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "operations": [
+    {"type": "crop", "rect": {"x": 0, "y": 0, "width": 600, "height": 400}},
+    {"type": "rectangle", "id": "feature-box", "rect": {"x": 34, "y": 42, "width": 220, "height": 92}, "color": "#FF3B30", "lineWidth": 6},
+    {"type": "ellipse", "id": "feature-circle", "rect": {"x": 300, "y": 140, "width": 100, "height": 70}, "color": "#0A84FF", "lineWidth": 5},
+    {"type": "arrow", "id": "feature-arrow", "start": {"x": 410, "y": 92}, "end": {"x": 260, "y": 90}, "color": "#FF3B30", "lineWidth": 6},
+    {"type": "pen", "id": "feature-pen", "points": [{"x": 360, "y": 350}, {"x": 400, "y": 330}, {"x": 440, "y": 360}, {"x": 480, "y": 340}], "color": "#30D158", "lineWidth": 5},
+    {"type": "highlighter", "id": "feature-highlight", "points": [{"x": 48, "y": 166}, {"x": 250, "y": 166}], "color": "#FFD60A66", "lineWidth": 18},
+    {"type": "text", "id": "feature-label", "origin": {"x": 360, "y": 48}, "text": "拓：重点功能", "color": "#FF3B30", "fontSize": 28},
+    {"type": "number", "id": "step-one", "center": {"x": 38, "y": 214}, "number": 1, "diameter": 32},
+    {"type": "mosaic", "id": "private-area", "mode": "rect", "rect": {"x": 74, "y": 228, "width": 126, "height": 52}, "scale": 12},
+    {"type": "mosaic", "id": "private-stroke", "mode": "brush", "points": [{"x": 60, "y": 340}, {"x": 130, "y": 355}, {"x": 200, "y": 340}], "lineWidth": 22, "scale": 10},
+    {"type": "blur", "id": "blur-area", "rect": {"x": 232, "y": 228, "width": 126, "height": 52}, "radius": 8},
+    {"type": "magnify", "id": "magnified-area", "rect": {"x": 430, "y": 226, "width": 104, "height": 104}, "factor": 2},
+    {"type": "rectangle", "id": "erase-probe", "rect": {"x": 8, "y": 8, "width": 20, "height": 20}, "lineWidth": 1},
+    {"type": "eraser", "targetIds": ["erase-probe"]}
+  ]
+}

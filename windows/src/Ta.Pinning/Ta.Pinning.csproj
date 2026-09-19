@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.Pinning</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      让测试程序集能看到内部互操作层（PinInterop）与内部窗口类 ——
+      真机验证需要搬动真实光标、投递鼠标消息、读窗口矩形。
+      只对测试开放，不扩大生产 API 面。
+    -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Ta.Pinning.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
