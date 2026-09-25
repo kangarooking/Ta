@@ -176,7 +176,9 @@ If the clipboard changes while recognition is running, Ta will not overwrite the
 
 The installer supports both Apple Silicon and Intel Macs. Open the DMG and drag 「拓」 into `Applications`. This build is not yet Apple-notarized; on first launch, Control-click the app in Finder, choose **Open**, and confirm once more.
 
-[**Download Ta for Windows (Preview, ZIP, no installer)**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+[**Download Ta for Windows (Preview, ZIP, no installer)**](https://github.com/kangarooking/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+> This Windows preview has known issues: later Agent annotations can remove earlier redactions; clearing the Agent cache or log in Settings does not clear the real files; shortcut changes may fail to reload. Read the [known issues and verification scope](https://github.com/kangarooking/Ta/releases/tag/windows-v0.1.0) before use.
 
 For Windows 10 version 2004 or later, and Windows 11. The package **bundles the .NET runtime and needs no installation**: after unzipping, run `Ta.Shell.exe` first (tray icon and global shortcuts), then `Ta.Settings.exe` (panel and settings). It is built from [`windows/`](./windows) and is not code-signed, so SmartScreen may warn on first launch — choose **Run anyway**.
 
