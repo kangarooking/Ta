@@ -176,7 +176,9 @@ ScreenCaptureKit 捕获（排除 Ta 自身窗口）
 
 安装包同时支持 Apple Silicon 与 Intel Mac。打开 DMG 后，把「拓」拖入 `Applications` 即可。当前版本尚未完成 Apple notarization；首次启动请在 Finder 中按住 Control 点击「拓」，选择“打开”，再确认一次。
 
-[**下载 Ta Windows 预览版（ZIP，免安装）**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+[**下载 Ta Windows 预览版（ZIP，免安装）**](https://github.com/kangarooking/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+> Windows 预览版仍有已知缺陷：连续 Agent 标注可能丢失先前的打码，设置页清理缓存/记录未接入真实存储，快捷键改绑可能无法热更新。使用前请阅读[完整已知问题与验证范围](https://github.com/kangarooking/Ta/releases/tag/windows-v0.1.0)。
 
 适用于 Windows 10 2004 及以上 / Windows 11，**自带 .NET 运行时、解压即用**：解压后先运行 `Ta.Shell.exe`（常驻托盘与全局快捷键），再运行 `Ta.Settings.exe`（面板与设置）。该包为 Windows 移植预览版，由 [`windows/`](./windows) 构建，尚未做代码签名，首次运行可能出现 SmartScreen 提示，选择“仍要运行”即可。
 
