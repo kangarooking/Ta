@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Ta.Demo</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+    <ProjectReference Include="..\Ta.HotKeys\Ta.HotKeys.csproj" />
+    <ProjectReference Include="..\Ta.Encoding\Ta.Encoding.csproj" />
+  </ItemGroup>
+</Project>

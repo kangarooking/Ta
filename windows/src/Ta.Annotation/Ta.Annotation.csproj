@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.Annotation</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 光栅化内部件（SoftwareCanvas / StrokeGeometry / ImageFilters / GlyphRasterizer）
+         需要被测试直接覆盖 —— 字形度量与滤镜数值都属于「必须锁定」的契约。 -->
+    <InternalsVisibleTo Include="Ta.Annotation.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 必须 -windows 专用 TFM：本项目直接调用 Win32。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Ta.Platform</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 操作栏圆角绘制（GraphicsPath）需要 —— net8.0-windows 的 Drawing2D 在这里。 -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+  </ItemGroup>
+</Project>

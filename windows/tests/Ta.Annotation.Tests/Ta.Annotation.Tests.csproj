@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 必须是 -windows 专用 TFM：被 Ta.Annotation（net8.0-windows）引用。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Ta.Annotation\Ta.Annotation.csproj" />
+    <ProjectReference Include="..\..\src\Ta.Core\Ta.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 跨平台测试向量：直接复用仓库根 Tests/Fixtures 下的 Mac 夹具（不复制内容，避免漂移）。 -->
+    <None Include="..\..\..\Tests\Fixtures\annotation-recipe-v1.json" Link="Fixtures\annotation-recipe-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

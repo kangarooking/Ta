@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.Core</RootNamespace>
+    <!--
+      本程序集刻意不引用任何 UI / 平台 API。
+      对应 Mac 版 AIScreenshotCore 的定位：纯算术 + 数据模型，
+      可被 XCTest 等价测试完整覆盖，且能独立演进。
+    -->
+  </PropertyGroup>
+
+</Project>

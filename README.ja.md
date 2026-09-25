@@ -8,12 +8,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-D6402F.svg)](./LICENSE)
 [![Platform: macOS 14+](https://img.shields.io/badge/macOS-14%2B-1A1A1A.svg)](https://www.apple.com/macos/)
+[![Platform: Windows 10 2004+](https://img.shields.io/badge/Windows-10%202004%2B-1A1A1A.svg)](./windows)
 [![Swift: 6.2](https://img.shields.io/badge/Swift-6.2-F05138.svg)](https://www.swift.org/)
 [![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-C98B2E.svg)](https://github.com/kangarooking/Ta/releases/tag/v1.0.1)
 
 **キャプチャ、OCR、AI 画像理解、翻訳、スクロールキャプチャ、ピン留め、注釈を一つの流れにまとめた AI ネイティブ・スクリーンショットツールです。**
 
-現在は **macOS** のみに対応しています。Windows 版も開発中です。
+macOS 14+ 版を公開中です。**Windows プレビュー版**（.NET 8 への移植、ソースは [`windows/`](./windows)）もダウンロードできます。
 
 [简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md)
 
@@ -175,6 +176,10 @@ ScreenCaptureKit で撮影（Ta 自身のウインドウは除外）
 
 Apple Silicon と Intel Mac の両方に対応しています。DMG を開き、「拓」を `Applications` へドラッグしてください。現在のビルドは Apple notarization 未完了のため、初回起動時は Finder で Control キーを押しながらアプリをクリックし、「開く」を選んでもう一度確認してください。
 
+[**Ta Windows プレビュー版をダウンロード（ZIP・インストール不要）**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+Windows 10 version 2004 以降 / Windows 11 に対応しています。**.NET ランタイム同梱・インストール不要**：解凍後、まず `Ta.Shell.exe`（常駐トレイとグローバルショートカット）を起動し、次に `Ta.Settings.exe`（パネルと設定）を起動してください。[`windows/`](./windows) からビルドした Windows 移植プレビュー版で、コード署名は未実施のため、初回起動時に SmartScreen の警告が表示される場合があります。その場合は「実行」を選んでください。
+
 ### ソースからビルド
 
 ```bash
@@ -304,7 +309,7 @@ Agent 機能も、明確な許可、見える処理、取り消せる結果を�
 - [ ] AI 美化、スマートな個人情報マスキング、複数サイズ生成
 - [ ] 履歴、検索、結果の再コピー
 - [ ] 確認可能で取り消せるスクリーンショット Agent ワークフロー
-- [ ] Windows 版
+- [x] Windows 版（.NET 8 移植、[`windows/`](./windows)）
 - [x] macOS Universal DMG、ZIP、チェックサム
 - [ ] Developer ID 署名と Apple notarization
 

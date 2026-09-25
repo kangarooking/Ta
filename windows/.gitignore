@@ -1,0 +1,12 @@
+# .NET 构建产物
+bin/
+obj/
+
+# IDE / 用户本地设置
+*.user
+*.suo
+.vs/
+
+# 测试产物与崩溃转储
+TestResults/
+*.dmp

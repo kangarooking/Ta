@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      ⚠️ TFM 说明（多 agent 并行协作必读）
+
+      本程序集是解决方案里**唯一**需要 WinRT 的程序集，必须带 Windows 平台版本号才能拿到
+      `Windows.Media.Ocr` / `Windows.Graphics.Imaging` 这些投影类型。
+      `net8.0-windows` 等价于 `net8.0-windows7.0`，**不含**任何 WinRT 投影（已实测：编译不过）。
+
+      影响面：
+        · 引用本项目的程序集也必须把 TFM 写成 `net8.0-windows10.0.19041.0`（或更高平台版本），
+          否则 NuGet 报 NU1201「项目与 net8.0-windows7.0 不兼容」。这是唯一的协作代价。
+        · 未引入**任何** NuGet 依赖 —— WinRT 投影由 .NET 8 SDK 自带的
+          `Microsoft.Windows.SDK.NET.Ref` 提供，本地无需安装 Windows SDK
+          （实测：本机无 Windows Kits，`CsWinRT` 路线因「Could not find the Windows SDK」直接失败，
+          只有 -windows10.0.x TFM 这条路可用）。
+        · Windows 10 1809 (build 17763) 起提供 Windows.Media.Ocr，选 19041（20H1）是安全下界。
+
+      可回退性：
+        WinRT 只出现在 `Engines/WindowsMediaOcrEngine.cs` **一个文件**里。本程序集其余部分
+        （文本后处理、增强包管线、分发链）完全不依赖 WinRT，在 `net8.0-windows` 下同样成立。
+        若团队决定改用手写 COM 互操作以换回 `net8.0-windows`，只需替换那一个文件。
+    -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.OCR</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+  </ItemGroup>
+
+</Project>

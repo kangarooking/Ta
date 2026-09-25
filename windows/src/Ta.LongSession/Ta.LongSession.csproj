@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ta.LongSession</RootNamespace>
+
+    <!--
+      System.Windows.Automation（UI Automation）在 WindowsDesktop 引用包内，
+      但**不随** UseWindowsForms / FrameworkReference 自动加入编译集
+      （dotnet/wpf#2530）。这里显式引用引用包里的两个程序集：
+
+        UIAutomationClient.dll  → System.Windows.Automation（AutomationElement 等）
+        UIAutomationTypes.dll   → System.Windows.Automation 的依赖类型
+
+      路径由 SDK 自带的属性拼出（NetCoreTargetingPackRoot + 捆绑版本），
+      不写死盘符与版本号；SDK 升级后自动跟随。
+    -->
+    <WindowsDesktopRefPack>$(NetCoreTargetingPackRoot)\Microsoft.WindowsDesktop.App.Ref\$(BundledNETCoreAppPackageVersion)\ref\net8.0\</WindowsDesktopRefPack>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="UIAutomationClient">
+      <HintPath>$(WindowsDesktopRefPack)UIAutomationClient.dll</HintPath>
+    </Reference>
+    <Reference Include="UIAutomationTypes">
+      <HintPath>$(WindowsDesktopRefPack)UIAutomationTypes.dll</HintPath>
+    </Reference>
+    <!-- UIAutomationClient 依赖 WindowsBase（System.Windows.Point 在其中）；
+         框架自带的 WindowsBase 4.0.0.0 是 facade，必须显式引用桌面包的版本。 -->
+    <Reference Include="WindowsBase">
+      <HintPath>$(WindowsDesktopRefPack)WindowsBase.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+  </ItemGroup>
+</Project>

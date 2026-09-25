@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      必须 -windows 专用 TFM：本项目直接调用 Win32（Shell_NotifyIcon / UpdateLayeredWindow）。
+      10.0.19041.0：Ta.OCR（Windows.Media.Ocr / WinRT 互操作）要求 Windows SDK 版本 TFM，
+      引用它的项目必须对齐，否则 NETSDK1206 拒绝解析。
+    -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Ta.Shell</RootNamespace>
+    <!--
+      托盘应用：用 WinExe 避免启动时闪一下控制台窗口。
+      诊断输出同时写 stdout 与日志文件。stdout 可被重定向到文件，
+      交互式运行时则不会出现控制台。
+
+      UseWindowsForms 拿 System.Drawing（GDI+）：托盘 popover、结果反馈条、
+      以及真实标注编辑器（Composition/InlineAnnotationEditor.cs）的窗体。
+      UseWPF 是因为引用了 Ta.Encoding / Ta.Settings（WPF 工程），
+      其传递的 WPF 程序集需要宿主也声明 WPF 框架引用才能参与编译。
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <ApplicationVisualStyles>false</ApplicationVisualStyles>
+    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+    <ApplicationDefaultFont>false</ApplicationDefaultFont>
+    <InvariantGlobalization>true</InvariantGlobalization>
+      <!--
+        exe 图标。它是二进制产物、仓库不提交；用 tools/make_appicon.py 从
+        Resources/Brand/Ta-AppIcon.png 生成。缺失时不设图标（仍能正常构建）。
+      -->
+      <ApplicationIcon Condition="Exists('..\..\assets\app.ico')">..\..\assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      UseWPF 会替换掉默认隐式 using（丢失 System.IO 等，见 Ta.Encoding.csproj 同款注释），
+      这里用全局 Using 补回。
+    -->
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 基础 -->
+    <ProjectReference Include="..\Ta.Core\Ta.Core.csproj" />
+    <ProjectReference Include="..\Ta.Platform\Ta.Platform.csproj" />
+    <ProjectReference Include="..\Ta.HotKeys\Ta.HotKeys.csproj" />
+    <!-- 真实子系统（2026-09 接线：Fake → 真） -->
+    <ProjectReference Include="..\Ta.Capture\Ta.Capture.csproj" />
+    <ProjectReference Include="..\Ta.Encoding\Ta.Encoding.csproj" />
+    <ProjectReference Include="..\Ta.OCR\Ta.OCR.csproj" />
+    <ProjectReference Include="..\Ta.AI\Ta.AI.csproj" />
+    <ProjectReference Include="..\Ta.Translate\Ta.Translate.csproj" />
+    <ProjectReference Include="..\Ta.Annotation\Ta.Annotation.csproj" />
+    <ProjectReference Include="..\Ta.Pinning\Ta.Pinning.csproj" />
+    <ProjectReference Include="..\Ta.LongSession\Ta.LongSession.csproj" />
+    <ProjectReference Include="..\Ta.AgentBridge\Ta.AgentBridge.csproj" />
+    <!-- 设置存储 / Provider 档案 / DPAPI 密钥（与设置窗共用 %LOCALAPPDATA%\Ta\settings.json） -->
+    <ProjectReference Include="..\Ta.Settings\Ta.Settings.csproj" />
+  </ItemGroup>
+
+</Project>
