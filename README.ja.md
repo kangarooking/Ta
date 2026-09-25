@@ -176,7 +176,9 @@ ScreenCaptureKit で撮影（Ta 自身のウインドウは除外）
 
 Apple Silicon と Intel Mac の両方に対応しています。DMG を開き、「拓」を `Applications` へドラッグしてください。現在のビルドは Apple notarization 未完了のため、初回起動時は Finder で Control キーを押しながらアプリをクリックし、「開く」を選んでもう一度確認してください。
 
-[**Ta Windows プレビュー版をダウンロード（ZIP・インストール不要）**](https://github.com/qbdx-hub/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+[**Ta Windows プレビュー版をダウンロード（ZIP・インストール不要）**](https://github.com/kangarooking/Ta/releases/download/windows-v0.1.0/Ta-windows-v0.1.0-x64.zip)
+
+> Windows プレビュー版には既知の不具合があります。Agent の追加入力で先に行ったマスキングが消える場合があり、設定画面からのキャッシュ・履歴削除は実ファイルに反映されず、ショートカットの変更が即時反映されない場合があります。[既知の問題と検証範囲](https://github.com/kangarooking/Ta/releases/tag/windows-v0.1.0)をご確認ください。
 
 Windows 10 version 2004 以降 / Windows 11 に対応しています。**.NET ランタイム同梱・インストール不要**：解凍後、まず `Ta.Shell.exe`（常駐トレイとグローバルショートカット）を起動し、次に `Ta.Settings.exe`（パネルと設定）を起動してください。[`windows/`](./windows) からビルドした Windows 移植プレビュー版で、コード署名は未実施のため、初回起動時に SmartScreen の警告が表示される場合があります。その場合は「実行」を選んでください。
 
