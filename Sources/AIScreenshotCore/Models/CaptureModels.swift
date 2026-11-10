@@ -61,6 +61,29 @@ public enum OCREnginePreference: String, CaseIterable, Codable, Sendable {
     }
 }
 
+/// Idle-release policy for the optional OCR pack worker process.
+/// The raw value is the idle timeout in seconds; zero means the worker is
+/// kept resident for the whole app session and is never auto-released.
+public enum OCRPackIdleTimeout: Int, CaseIterable, Codable, Sendable {
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+    case oneHour = 3600
+    case never = 0
+
+    public var label: String {
+        switch self {
+        case .fiveMinutes: "5 分钟后释放（默认）"
+        case .fifteenMinutes: "15 分钟后释放"
+        case .oneHour: "1 小时后释放"
+        case .never: "永不释放（常驻）"
+        }
+    }
+
+    public var seconds: TimeInterval {
+        TimeInterval(rawValue)
+    }
+}
+
 public extension CaptureMode {
     var directAction: CaptureQuickAction? {
         switch self {
