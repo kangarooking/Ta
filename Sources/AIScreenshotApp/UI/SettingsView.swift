@@ -184,6 +184,8 @@ private struct GeneralSettingsView: View {
     @AppStorage("resultBarDuration") private var resultBarDuration = 3.0
     @AppStorage("saveHistory") private var saveHistory = false
     @AppStorage("postCaptureAction") private var postCaptureAction = PostCaptureAction.choose.rawValue
+    @AppStorage(AppIconVisibility.dockIconKey) private var hideDockIcon = false
+    @AppStorage(AppIconVisibility.menuBarIconKey) private var hideMenuBarIcon = false
 
     var body: some View {
         Form {
@@ -218,10 +220,26 @@ private struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("图标显示") {
+                Toggle("隐藏 Dock 图标", isOn: $hideDockIcon)
+                Toggle("隐藏菜单栏图标", isOn: $hideMenuBarIcon)
+                Text(hideDockIcon && hideMenuBarIcon
+                     ? "两个图标都隐藏后，应用只能通过全局快捷键操作；如果找不到入口，请先恢复其中一个图标。"
+                     : "菜单栏图标是面板入口，Dock 图标用于前台/后台切换；随时可以恢复显示。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.clear)
+        .onChange(of: hideDockIcon) {
+            AppIconVisibilityController.shared.apply()
+        }
+        .onChange(of: hideMenuBarIcon) {
+            AppIconVisibilityController.shared.apply()
+        }
     }
 }
 

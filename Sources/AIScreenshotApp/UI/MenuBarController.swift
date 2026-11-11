@@ -53,6 +53,11 @@ final class MenuBarController: NSObject {
         }
     }
 
+    /// 显示/隐藏菜单栏图标。隐藏后应用仍可依赖全局快捷键运行。
+    func setMenuBarIconVisible(_ visible: Bool) {
+        statusItem.isVisible = visible
+    }
+
     @objc private func closePopover(_ notification: Notification) {
         popover.performClose(nil)
     }

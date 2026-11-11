@@ -9,8 +9,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.applicationIconImage = icon
         }
         if let appModel = AppModel.current {
-            menuBarController = MenuBarController(appModel: appModel)
+            let controller = MenuBarController(appModel: appModel)
+            menuBarController = controller
+            AppIconVisibilityController.shared.attach(controller)
         }
+        AppIconVisibilityController.shared.apply()
     }
 
     func applicationShouldHandleReopen(
