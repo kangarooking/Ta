@@ -324,7 +324,7 @@ private struct RecognitionSettingsView: View {
                         }
                     }
                     Text(selectedEngine == .paddleOCR
-                         ? "PaddleOCR 在本机离线运行；选择后会后台预热并复用模型。闲置释放策略可配置（默认闲置 5 分钟释放约 700–800 MB 的临时内存；选「永不释放」则常驻）。安装时仍会完整校验增强包。"
+                         ? "PaddleOCR 在本机离线运行；选择后会后台预热并复用模型。闲置释放策略可配置（默认闲置 5 分钟释放；worker 常驻占用约 200 MB，选「永不释放」则一直保留）。安装时仍会完整校验增强包。"
                          : "增强包必须包含 manifest.json 和可执行适配器；未安装时自动回退 Apple Vision。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
