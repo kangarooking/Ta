@@ -70,7 +70,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        ConfiguredOCRService().prewarmIfNeeded()
+        let ocrService = ConfiguredOCRService()
+        ocrService.applyIdleTimeoutPolicy()
+        ocrService.prewarmIfNeeded()
 
         let arguments = launchArguments
         if launchPolicy.mode == .agentBridge {

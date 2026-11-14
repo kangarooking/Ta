@@ -692,6 +692,16 @@ struct ConfiguredOCRService: Sendable {
         }
     }
 
+    /// Applies the user's idle-release policy to the shared OCR worker before
+    /// prewarming, so the pending stop is scheduled with the right timeout.
+    func applyIdleTimeoutPolicy() {
+        let stored = UserDefaults.standard.object(forKey: "ocrPackIdleTimeout") as? Int
+        let seconds = stored.flatMap { timeout in
+            OCRPackIdleTimeout(rawValue: timeout)?.rawValue
+        }
+        PersistentOCRWorker.shared.setIdleTimeout(TimeInterval(seconds ?? OCRPackIdleTimeout.fiveMinutes.rawValue))
+    }
+
     func recognize(image: CGImage, languages: [String], mergeWrappedLines: Bool) async throws -> OCRResult {
         let raw = UserDefaults.standard.string(forKey: "ocrEngine")
             ?? OCREnginePreference.appleVision.rawValue

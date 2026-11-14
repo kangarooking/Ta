@@ -230,6 +230,7 @@ private struct RecognitionSettingsView: View {
     @AppStorage("mergeWrappedLines") private var mergeWrappedLines = false
     @AppStorage("recognitionRoute") private var recognitionRoute = RecognitionRoute.localOCR.rawValue
     @AppStorage("ocrEngine") private var ocrEngine = OCREnginePreference.appleVision.rawValue
+    @AppStorage("ocrPackIdleTimeout") private var ocrPackIdleTimeout = OCRPackIdleTimeout.fiveMinutes.rawValue
     @State private var packStatus: String?
     @State private var showingRemoveConfirmation = false
     @StateObject private var packInstaller = OCRPackInstallationViewModel()
@@ -317,8 +318,13 @@ private struct RecognitionSettingsView: View {
                     if let packStatus {
                         Text(packStatus).font(.caption).foregroundStyle(.secondary)
                     }
+                    Picker("增强包闲置释放", selection: $ocrPackIdleTimeout) {
+                        ForEach(OCRPackIdleTimeout.allCases, id: \.rawValue) { option in
+                            Text(option.label).tag(option.rawValue)
+                        }
+                    }
                     Text(selectedEngine == .paddleOCR
-                         ? "PaddleOCR 在本机离线运行；选择后会后台预热并复用模型，闲置 5 分钟自动释放约 700–800 MB 的临时内存。安装时仍会完整校验增强包。"
+                         ? "PaddleOCR 在本机离线运行；选择后会后台预热并复用模型。闲置释放策略可配置（默认闲置 5 分钟释放；选「永不释放」则常驻）。常驻内存实测约 1 GB（首次大图识别后），持续使用约 1.3–1.6 GB，不会自动缩回。安装时仍会完整校验增强包。"
                          : "增强包必须包含 manifest.json 和可执行适配器；未安装时自动回退 Apple Vision。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -350,6 +356,9 @@ private struct RecognitionSettingsView: View {
         .onChange(of: ocrEngine) { _, _ in
             packInstaller.refresh(selectedEngine)
             packInstaller.prewarm(selectedEngine)
+        }
+        .onChange(of: ocrPackIdleTimeout) { _, newValue in
+            PersistentOCRWorker.shared.setIdleTimeout(TimeInterval(newValue))
         }
         .confirmationDialog(
             "卸载 \(selectedEngine.displayName)？",
