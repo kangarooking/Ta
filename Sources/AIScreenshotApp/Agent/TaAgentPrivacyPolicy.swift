@@ -12,6 +12,33 @@ enum TaAgentPreferenceKey {
 struct TaAgentPrivacyPolicy: Equatable, Sendable {
     static let taBundleIdentifier = PersistentConfigurationIdentity.bundleIdentifier
 
+    /// Password managers and credential apps that are blocked until the user edits
+    /// the denylist. Used only when the preference has never been written; an
+    /// explicitly emptied list stays empty.
+    static let defaultBlockedBundleIdentifiers: [String] = [
+        "com.1password.1password",
+        "com.agilebits.onepassword7",
+        "com.agilebits.onepassword-osx",
+        "com.bitwarden.desktop",
+        "com.apple.keychainaccess",
+        "com.apple.Passwords",
+        "com.lastpass.LastPass",
+        "com.lastpass.lastpassmacdesktop",
+        "com.dashlane.Dashlane",
+        "com.dashlane.dashlanephonefinal",
+        "org.keepassxc.keepassxc",
+        "in.sinew.Enpass-Desktop",
+        "in.sinew.Enpass-Desktop.App",
+        "me.proton.pass.electron",
+        "com.markmcguill.strongbox.mac",
+        "com.hicknhacksoftware.MacPass",
+        "com.callpod.keepermac.lite",
+        "com.keepersecurity.passwordmanager",
+        "com.nordpass.macos.NordPass"
+    ]
+
+    static let defaultDenylistText = defaultBlockedBundleIdentifiers.joined(separator: "\n")
+
     let isEnabled: Bool
     let automaticCaptureAllowed: Bool
     let cloudPolicy: AgentCloudPolicy
@@ -40,7 +67,8 @@ struct TaAgentPrivacyPolicy: Equatable, Sendable {
             ? true
             : defaults.bool(forKey: TaAgentPreferenceKey.automaticCaptureAllowed)
         let cloudRaw = defaults.string(forKey: TaAgentPreferenceKey.cloudPolicy) ?? AgentCloudPolicy.auto.rawValue
-        let denylist = defaults.string(forKey: TaAgentPreferenceKey.privacyDenylist) ?? ""
+        let denylist = defaults.string(forKey: TaAgentPreferenceKey.privacyDenylist)
+            ?? Self.defaultDenylistText
         let blocked = Set(denylist
             .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -102,16 +130,29 @@ struct TaAgentPrivacyPolicy: Equatable, Sendable {
         return true
     }
 
+    /// The user's setting is an upper bound: a request may be stricter than the
+    /// setting but never looser. Strictness order is deny > auto > allow.
+    func effectiveCloudPolicy(requested: AgentCloudPolicy?) -> AgentCloudPolicy {
+        if cloudPolicy == .deny || requested == .deny { return .deny }
+        if cloudPolicy == .auto || requested == .auto { return .auto }
+        return requested ?? cloudPolicy
+    }
+
     func cloudError(requested: AgentCloudPolicy?) -> AgentErrorPayload? {
-        let effective = requested ?? cloudPolicy
-        guard effective != .deny else {
+        guard effectiveCloudPolicy(requested: requested) == .deny else { return nil }
+        if cloudPolicy == .deny {
             return AgentErrorPayload(
                 code: .cloudUploadNotAllowed,
-                message: "当前请求禁止把图片或文字发送到云端模型。",
-                hint: "改用本地能力，或在明确获得用户许可后设置 cloud=allow。",
+                message: "用户已在拓的设置中禁止把图片或文字发送到云端模型，请求参数无法覆盖该设置。",
+                hint: "改用本地能力（例如本地 OCR）；如需云端能力，请让用户在拓 → 设置 → Agent 与自动化中调整云端策略。",
                 retryable: false
             )
         }
-        return nil
+        return AgentErrorPayload(
+            code: .cloudUploadNotAllowed,
+            message: "当前请求禁止把图片或文字发送到云端模型。",
+            hint: "改用本地能力，或在明确获得用户许可后去掉 cloud=deny。",
+            retryable: false
+        )
     }
 }

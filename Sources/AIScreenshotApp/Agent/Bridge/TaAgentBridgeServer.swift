@@ -14,16 +14,24 @@ final class TaAgentBridgeServer: @unchecked Sendable {
     private let router: TaAgentRequestRouter
     private let lock = NSLock()
     private let acceptQueue = DispatchQueue(label: "com.ta.agent-bridge.accept", qos: .userInitiated)
-    private let connectionQueue = DispatchQueue(
-        label: "com.ta.agent-bridge.connections",
-        qos: .userInitiated,
-        attributes: .concurrent
-    )
+    private let receiveTimeout: TimeInterval
+    private let sendTimeout: TimeInterval
+    private let maximumConnections: Int
     private var listeningDescriptor: Int32 = -1
+    private var activeConnections = 0
 
-    init(socketURL: URL, router: TaAgentRequestRouter) {
+    init(
+        socketURL: URL,
+        router: TaAgentRequestRouter,
+        receiveTimeout: TimeInterval = TaAgentBridgeConnection.defaultReceiveTimeout,
+        sendTimeout: TimeInterval = TaAgentBridgeConnection.defaultSendTimeout,
+        maximumConnections: Int = 64
+    ) {
         self.socketURL = socketURL
         self.router = router
+        self.receiveTimeout = receiveTimeout
+        self.sendTimeout = sendTimeout
+        self.maximumConnections = max(1, maximumConnections)
     }
 
     func start() throws {
@@ -106,25 +114,74 @@ final class TaAgentBridgeServer: @unchecked Sendable {
         expectedUserID: uid_t,
         router: TaAgentRequestRouter
     ) {
-        while true {
+        var backoff: TimeInterval = 0.01
+        while isListening(on: listeningDescriptor) {
             let clientDescriptor = Darwin.accept(listeningDescriptor, nil, nil)
             if clientDescriptor >= 0 {
-                connectionQueue.async {
-                    let semaphore = DispatchSemaphore(value: 0)
-                    Task {
-                        await TaAgentBridgeConnection.handle(
-                            fileDescriptor: clientDescriptor,
-                            expectedUserID: expectedUserID,
-                            router: router
-                        )
-                        semaphore.signal()
-                    }
-                    semaphore.wait()
-                }
+                backoff = 0.01
+                startConnection(clientDescriptor, expectedUserID: expectedUserID, router: router)
                 continue
             }
-            if errno == EINTR { continue }
-            break
+            let code = errno
+            switch code {
+            case EINTR, ECONNABORTED:
+                // The call was interrupted or the peer gave up before accept: just try again.
+                continue
+            case EBADF, EINVAL, ENOTSOCK, EOPNOTSUPP:
+                // The listening socket is gone (stop() closed it): leave for good.
+                return
+            default:
+                // EMFILE, ENFILE, ENOBUFS, ENOMEM and friends are transient: back off
+                // briefly so in-flight connections can release resources, then resume.
+                Thread.sleep(forTimeInterval: backoff)
+                backoff = min(backoff * 2, 0.5)
+            }
         }
+    }
+
+    private func isListening(on descriptor: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return listeningDescriptor == descriptor
+    }
+
+    /// Hands the connection to its own thread. Blocking socket I/O must never run
+    /// on Swift's cooperative pool or on a width-limited dispatch queue.
+    private func startConnection(
+        _ clientDescriptor: Int32,
+        expectedUserID: uid_t,
+        router: TaAgentRequestRouter
+    ) {
+        lock.lock()
+        let admitted = activeConnections < maximumConnections
+        if admitted { activeConnections += 1 }
+        lock.unlock()
+        guard admitted else {
+            // Too many simultaneous clients: refuse instead of growing without bound.
+            Darwin.close(clientDescriptor)
+            return
+        }
+
+        let receiveTimeout = self.receiveTimeout
+        let sendTimeout = self.sendTimeout
+        let thread = Thread { [weak self] in
+            TaAgentBridgeConnection.serve(
+                fileDescriptor: clientDescriptor,
+                expectedUserID: expectedUserID,
+                router: router,
+                receiveTimeout: receiveTimeout,
+                sendTimeout: sendTimeout
+            )
+            self?.connectionFinished()
+        }
+        thread.name = "com.ta.agent-bridge.connection"
+        thread.qualityOfService = .userInitiated
+        thread.start()
+    }
+
+    private func connectionFinished() {
+        lock.lock()
+        activeConnections = max(0, activeConnections - 1)
+        lock.unlock()
     }
 }

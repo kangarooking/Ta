@@ -23,6 +23,49 @@ export type TaMethod =
   | 'deliver.copy'
   | 'deliver.save'
 
+export type TaCloudPolicy = 'auto' | 'allow' | 'deny'
+
+/**
+ * Optional parameters understood by the Ta Bridge (kept in sync with
+ * TaAgentCapabilityService). All are optional; omit `cloud` to inherit the
+ * policy the user configured in Ta.
+ */
+export interface TaOptionalParams {
+  /** capture.*: longest output side in pixels (16...16384). */
+  maxDimension?: number
+  /** capture.window: app name fragment or exact Bundle ID, instead of windowId. */
+  app?: string
+  /** capture.window: window-title fragment, alone or together with `app`. */
+  title?: string
+  /** recognize.ocr: include per-line pixel bounding boxes in `data.lines`. */
+  boxes?: boolean
+  /** deliver.save: allow replacing an existing PNG. */
+  overwrite?: boolean
+  /** Cloud-capable methods: may only be stricter than the user's Ta setting. */
+  cloud?: TaCloudPolicy
+}
+
+/** Error codes the Bridge server emits. Client-side failures are thrown as Errors. */
+export type TaErrorCode =
+  | 'PROTOCOL_VERSION_MISMATCH'
+  | 'SCREEN_PERMISSION_REQUIRED'
+  | 'INVALID_REQUEST'
+  | 'TARGET_NOT_FOUND'
+  | 'TARGET_CHANGED'
+  | 'TARGET_BLOCKED_BY_PRIVACY_POLICY'
+  | 'MODEL_PROFILE_NOT_CONFIGURED'
+  | 'CLOUD_UPLOAD_NOT_ALLOWED'
+  | 'CANCELLED'
+  | 'INTERNAL_ERROR'
+
+/** Methods that may hand an image or text to a cloud model and can take minutes. */
+export const CLOUD_CAPABLE_METHODS: ReadonlySet<TaMethod> = new Set<TaMethod>([
+  'recognize.ocr',
+  'analyze.image',
+  'translate.text',
+  'translate.image',
+])
+
 export interface TaArtifact {
   id: string
   path: string

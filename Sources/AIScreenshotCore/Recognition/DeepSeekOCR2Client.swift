@@ -13,8 +13,11 @@ public enum DeepSeekOCRPromptMode: String, CaseIterable, Codable, Sendable {
 
     public var prompt: String {
         switch self {
-        case .plainText: "<image>\nFree OCR."
-        case .documentMarkdown: "<image>\n<|grounding|>Convert the document to markdown."
+        // The image travels as an `image_url` part; the server's chat
+        // template inserts the image placeholder itself, so a literal
+        // "<image>" here would be sent to the model as plain text.
+        case .plainText: "Free OCR."
+        case .documentMarkdown: "<|grounding|>Convert the document to markdown."
         }
     }
 }
@@ -43,13 +46,23 @@ public enum DeepSeekOCR2ClientError: LocalizedError, Equatable {
 public struct DeepSeekOCR2Client: @unchecked Sendable {
     public static let latestOfficialModel = "deepseek-ai/DeepSeek-OCR-2"
     public static let recommendedLocalBaseURL = "http://127.0.0.1:8000/v1"
+    static let maxOutputTokens = 8192
 
     private let session: URLSession
+    let retryBaseDelay: TimeInterval
 
     public init(session: URLSession = .shared) {
-        self.session = session
+        self.init(session: session, retryBaseDelay: ProviderHTTP.defaultBaseDelay)
     }
 
+    init(session: URLSession, retryBaseDelay: TimeInterval) {
+        self.session = session
+        self.retryBaseDelay = retryBaseDelay
+    }
+
+    /// Recognises the image. Grounding tags are removed from the output, and
+    /// when the model stopped at its output limit the returned text ends
+    /// with `ProviderOutputNotice.truncated`.
     public func recognize(
         baseURL: String,
         model: String,
@@ -62,48 +75,53 @@ public struct DeepSeekOCR2Client: @unchecked Sendable {
         guard !trimmedModel.isEmpty else { throw DeepSeekOCR2ClientError.missingModel }
         let endpoint = try endpointURL(from: baseURL)
 
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 120
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedKey.isEmpty {
-            request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-        }
-
-        let dataURL = "data:\(mimeType);base64,\(imageData.base64EncodedString())"
-        let body: [String: Any] = [
-            "model": trimmedModel,
-            "messages": [[
-                "role": "user",
-                "content": [
-                    ["type": "text", "text": mode.prompt],
-                    ["type": "image_url", "image_url": ["url": dataURL]]
-                ]
-            ]],
-            "temperature": 0,
-            "max_tokens": 4096
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw DeepSeekOCR2ClientError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw DeepSeekOCR2ClientError.server(
-                statusCode: http.statusCode,
-                message: errorMessage(from: data) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+        let outcome: ProviderChatOutcome
+        do {
+            outcome = try await ProviderChatEngine.complete(
+                ProviderChatRequest(
+                    provider: .openAICompatible,
+                    endpoint: endpoint,
+                    model: trimmedModel,
+                    apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                    prompt: mode.prompt,
+                    imageData: imageData,
+                    mimeType: mimeType,
+                    maxTokens: Self.maxOutputTokens,
+                    timeout: 120
+                ),
+                session: session,
+                retryBaseDelay: retryBaseDelay
             )
+        } catch let failure as ProviderChatFailure {
+            switch failure {
+            case .invalidResponse:
+                throw DeepSeekOCR2ClientError.invalidResponse
+            case .emptyResponse, .reasoningOnlyOutput:
+                throw DeepSeekOCR2ClientError.emptyResponse
+            case .server(let statusCode, let message):
+                throw DeepSeekOCR2ClientError.server(statusCode: statusCode, message: message)
+            }
         }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = object["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let text = responseText(from: message["content"]),
-              !text.isEmpty else {
-            throw DeepSeekOCR2ClientError.emptyResponse
+        let text = Self.strippingGroundingTags(from: outcome.text)
+        guard !text.isEmpty else { throw DeepSeekOCR2ClientError.emptyResponse }
+        return ProviderOutputNotice.appending(to: text, truncated: outcome.truncated)
+    }
+
+    /// Removes DeepSeek-OCR grounding markup such as
+    /// `<|ref|>title<|/ref|><|det|>[[12,34,560,78]]<|/det|>` and any other
+    /// leftover `<|...|>` special tokens, keeping only the document text.
+    static func strippingGroundingTags(from text: String) -> String {
+        var result = text
+        let patterns = [
+            #"<\|ref\|>[\s\S]*?<\|/ref\|>\s*<\|det\|>[\s\S]*?<\|/det\|>[ \t]*\n?"#,
+            #"<\|det\|>[\s\S]*?<\|/det\|>[ \t]*\n?"#,
+            #"<\|/?[A-Za-z_][A-Za-z0-9_▁]*\|>"#
+        ]
+        for pattern in patterns {
+            result = result.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
         }
-        return text
+        result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func endpointURL(from rawValue: String) throws -> URL {
@@ -120,36 +138,14 @@ public struct DeepSeekOCR2Client: @unchecked Sendable {
         if components.host?.lowercased() == "api.deepseek.com" {
             throw DeepSeekOCR2ClientError.officialAPIUnsupported
         }
-        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if path.hasSuffix("chat/completions") {
-            return components.url!
-        }
-        components.path = "/" + [path, "chat/completions"].filter { !$0.isEmpty }.joined(separator: "/")
+        components.path = ProviderEndpointPath.resolved(
+            provider: .openAICompatible,
+            path: components.path,
+            model: ""
+        )
         guard let url = components.url else {
             throw DeepSeekOCR2ClientError.invalidEndpoint("DeepSeek OCR 服务地址格式无效。")
         }
         return url
-    }
-
-    private func responseText(from content: Any?) -> String? {
-        if let string = content as? String {
-            return string.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let parts = content as? [[String: Any]] {
-            return parts.compactMap { part in
-                part["text"] as? String ?? part["content"] as? String
-            }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return nil
-    }
-
-    private func errorMessage(from data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        if let error = object["error"] as? [String: Any] {
-            return error["message"] as? String ?? error["detail"] as? String
-        }
-        return object["message"] as? String ?? object["detail"] as? String
     }
 }

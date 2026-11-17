@@ -35,9 +35,64 @@ struct OCRPackManifest: Codable, Equatable, Sendable {
     }
 }
 
+/// One recognised line reported by an OCR pack (protocol 2+).
+struct OCRPackLine: Codable, Equatable, Sendable {
+    let text: String
+    let confidence: Float?
+    /// `[minX, minY, maxX, maxY]` in pixels of the submitted image, with a
+    /// top-left origin. Nil when the pack could not locate the line.
+    let box: [Double]?
+
+    init(text: String, confidence: Float? = nil, box: [Double]? = nil) {
+        self.text = text
+        self.confidence = confidence
+        self.box = box
+    }
+}
+
 struct OCRPackResponse: Codable, Sendable {
     let text: String
     let confidence: Float
+    /// Per-line geometry. Absent for packs built before protocol 2, which
+    /// keep working with text-only results.
+    let lines: [OCRPackLine]?
+
+    init(text: String, confidence: Float, lines: [OCRPackLine]? = nil) {
+        self.text = text
+        self.confidence = confidence
+        self.lines = lines
+    }
+
+    /// Maps the pack's pixel boxes into the structure Apple Vision produces
+    /// (normalised, bottom-left origin). Returns nil unless every non-empty
+    /// line has a usable box, so text is never dropped for lack of geometry.
+    func textLines(imageWidth: Int, imageHeight: Int) -> [OCRTextLine]? {
+        guard let lines, imageWidth > 0, imageHeight > 0 else { return nil }
+        let width = Double(imageWidth)
+        let height = Double(imageHeight)
+        var result: [OCRTextLine] = []
+        for line in lines {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            guard let box = line.box, box.count == 4, box.allSatisfy(\.isFinite) else { return nil }
+            let minX = min(max(box[0], 0), width)
+            let maxX = min(max(box[2], 0), width)
+            let minY = min(max(box[1], 0), height)
+            let maxY = min(max(box[3], 0), height)
+            guard maxX > minX, maxY > minY else { return nil }
+            result.append(OCRTextLine(
+                text: text,
+                confidence: line.confidence ?? confidence,
+                boundingBox: CGRect(
+                    x: minX / width,
+                    y: 1 - maxY / height,
+                    width: (maxX - minX) / width,
+                    height: (maxY - minY) / height
+                )
+            ))
+        }
+        return result.isEmpty ? nil : result
+    }
 }
 
 struct OCRPackHealthResponse: Codable, Sendable {
@@ -172,17 +227,56 @@ struct OptionalOCRPackManager: @unchecked Sendable {
         return OCRPackAvailability(package: resolved.package, isLocal: resolved.isLocal)
     }
 
+    /// Synchronous import kept for existing callers. It blocks the main
+    /// thread during the health check and copy; prefer
+    /// `chooseAndImportInBackground(_:)`.
     @MainActor
     func chooseAndImport(_ engine: OCREnginePreference) throws -> String? {
         guard engine != .appleVision else { return nil }
+        guard let source = Self.choosePackDirectory(for: engine) else { return nil }
+        return try installDirectory(source, expectedEngine: engine, performHealthCheck: true).version
+    }
+
+    /// Same as `chooseAndImport`, but only the open panel runs on the main
+    /// actor: validation (SHA-256, health check that launches the pack) and
+    /// the multi-hundred-megabyte copy run on a background task.
+    @MainActor
+    func chooseAndImportInBackground(_ engine: OCREnginePreference) async throws -> String? {
+        guard engine != .appleVision else { return nil }
+        guard let source = Self.choosePackDirectory(for: engine) else { return nil }
+        return try await importDirectoryInBackground(source, expectedEngine: engine).version
+    }
+
+    /// Validates and installs a pack directory off the calling actor.
+    func importDirectoryInBackground(
+        _ source: URL,
+        expectedEngine: OCREnginePreference,
+        performHealthCheck: Bool = true
+    ) async throws -> OCRPackInstalledInfo {
+        let task = Task.detached(priority: .userInitiated) {
+            try self.installDirectory(
+                source,
+                expectedEngine: expectedEngine,
+                performHealthCheck: performHealthCheck
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    @MainActor
+    private static func choosePackDirectory(for engine: OCREnginePreference) -> URL? {
         let panel = NSOpenPanel()
         panel.title = "导入 \(engine.displayName)"
         panel.message = "请选择包含 manifest.json 的已解压增强包目录。导入前会校验引擎、架构、可执行路径和 SHA-256。"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let source = panel.url else { return nil }
-        return try installDirectory(source, expectedEngine: engine, performHealthCheck: true).version
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     func installRecommended(
@@ -226,6 +320,7 @@ struct OptionalOCRPackManager: @unchecked Sendable {
             arguments: ["-x", "-k", archive.path, extracted.path],
             timeout: 300
         )
+        try validateExtractedSymlinks(in: extracted)
         let source = try locatePackRoot(in: extracted)
 
         progress(.init(stage: .healthChecking, fraction: nil))
@@ -245,13 +340,19 @@ struct OptionalOCRPackManager: @unchecked Sendable {
         }
     }
 
-    func recognize(image: CGImage, engine: OCREnginePreference) async throws -> OCRResult {
+    func recognize(
+        image: CGImage,
+        engine: OCREnginePreference,
+        mergeWrappedLines: Bool = false
+    ) async throws -> OCRResult {
         let directory = packDirectory(for: engine)
         let manifest = try readManifest(at: directory)
         guard manifest.engine == engine else { throw OptionalOCRPackError.wrongEngine }
         try validateCompatibility(architecture: manifest.architecture, minimumMacOS: manifest.minimumMacOS)
         let executable = try validateExecutable(manifest: manifest, packDirectory: directory)
-        return try await Task.detached(priority: .userInitiated) { [manifest] in
+        // A detached task does not inherit cancellation; forward it so a
+        // cancelled capture stops waiting on a slow or hung OCR worker.
+        let work = Task.detached(priority: .userInitiated) { [manifest] () throws -> OCRResult in
             let temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ai-screenshot-ocr-\(UUID().uuidString).png")
             defer { try? FileManager.default.removeItem(at: temporary) }
@@ -281,13 +382,45 @@ struct OptionalOCRPackManager: @unchecked Sendable {
                 }
                 response = decoded
             }
-            return OCRResult(
-                text: response.text,
-                contentType: ContentClassifier().classify(response.text),
-                confidence: response.confidence,
-                engine: engine
+            return Self.makeResult(
+                from: response,
+                imageWidth: preparedImage.width,
+                imageHeight: preparedImage.height,
+                engine: engine,
+                mergeWrappedLines: mergeWrappedLines
             )
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
+
+    /// Packs that report line boxes get the same structured result as Apple
+    /// Vision (layout blocks for overlay translation, tables, Markdown);
+    /// older packs fall back to their plain text.
+    static func makeResult(
+        from response: OCRPackResponse,
+        imageWidth: Int,
+        imageHeight: Int,
+        engine: OCREnginePreference,
+        mergeWrappedLines: Bool = false
+    ) -> OCRResult {
+        if let lines = response.textLines(imageWidth: imageWidth, imageHeight: imageHeight) {
+            return OCRResultAssembler().assemble(
+                lines: lines,
+                mergeWrappedLines: mergeWrappedLines,
+                engine: engine,
+                confidence: response.confidence
+            )
+        }
+        return OCRResult(
+            text: response.text,
+            contentType: ContentClassifier().classify(response.text),
+            confidence: response.confidence,
+            engine: engine
+        )
     }
 
     func prewarm(_ engine: OCREnginePreference) {
@@ -442,18 +575,91 @@ struct OptionalOCRPackManager: @unchecked Sendable {
     }
 
     private func validateArchiveEntries(_ archive: URL) throws {
-        let data = try runProcessForOutput(
+        let names = try runProcessForOutput(
             executable: URL(fileURLWithPath: "/usr/bin/zipinfo"),
             arguments: ["-1", archive.path],
             timeout: 60
         )
-        guard let listing = String(data: data, encoding: .utf8) else {
+        guard let listing = String(data: names, encoding: .utf8) else {
             throw OptionalOCRPackError.unsafeArchive
         }
         for line in listing.split(separator: "\n") {
-            let path = String(line)
-            let components = path.split(separator: "/", omittingEmptySubsequences: false)
-            if path.hasPrefix("/") || path.contains("\\") || components.contains("..") {
+            guard Self.isSafeArchivePath(String(line)) else { throw OptionalOCRPackError.unsafeArchive }
+        }
+
+        // The name-only listing cannot show entry types. Symlinks are legal
+        // inside a pack (the bundled Python runtime uses them), but no entry
+        // may be written *through* a symlink: that is how an archive escapes
+        // its destination. Where each link points is verified after
+        // extraction by `validateExtractedSymlinks`.
+        let details = try runProcessForOutput(
+            executable: URL(fileURLWithPath: "/usr/bin/zipinfo"),
+            arguments: ["-s", archive.path],
+            timeout: 60
+        )
+        guard let detailed = String(data: details, encoding: .utf8) else {
+            throw OptionalOCRPackError.unsafeArchive
+        }
+        let entryPaths = listing.split(separator: "\n").map(String.init)
+        guard !Self.archiveWritesThroughSymlink(
+            symlinks: Self.archiveSymlinkPaths(inDetailedListing: detailed),
+            entries: entryPaths
+        ) else {
+            throw OptionalOCRPackError.unsafeArchive
+        }
+    }
+
+    static func isSafeArchivePath(_ path: String) -> Bool {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !path.hasPrefix("/") && !path.contains("\\")
+            && !components.contains("..")
+    }
+
+    /// Paths of symlink entries in `zipinfo -s` output. Entry lines look like
+    /// `lrwxr-xr-x  3.0 unx  14 bx stor 26-Nov-17 16:25 dir/name with spaces`.
+    static func archiveSymlinkPaths(inDetailedListing listing: String) -> [String] {
+        listing.split(separator: "\n").compactMap { line -> String? in
+            guard line.range(of: #"^l[-rwxsStT]{9}\s"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            let fields = line.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: true)
+            guard fields.count == 9 else { return "" }
+            return String(fields[8])
+        }
+    }
+
+    /// True when any entry lies below a symlink entry (or a symlink's path
+    /// could not be parsed, which is treated as unsafe).
+    static func archiveWritesThroughSymlink(symlinks: [String], entries: [String]) -> Bool {
+        for symlink in symlinks {
+            let link = symlink.hasSuffix("/") ? String(symlink.dropLast()) : symlink
+            guard !link.isEmpty else { return true }
+            if entries.contains(where: { $0.hasPrefix(link + "/") }) { return true }
+        }
+        return false
+    }
+
+    /// After extraction every symlink must resolve to a location inside the
+    /// extracted tree; absolute targets and links that climb out are refused.
+    func validateExtractedSymlinks(in directory: URL) throws {
+        let root = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: []
+        ) else { throw OptionalOCRPackError.unsafeArchive }
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true else {
+                continue
+            }
+            guard let target = try? fileManager.destinationOfSymbolicLink(atPath: url.path),
+                  !target.hasPrefix("/"), !target.hasPrefix("~") else {
+                throw OptionalOCRPackError.unsafeArchive
+            }
+            let parent = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+            let resolved = parent.appendingPathComponent(target).standardizedFileURL
+                .resolvingSymlinksInPath().path
+            guard resolved == root || resolved.hasPrefix(root + "/") else {
                 throw OptionalOCRPackError.unsafeArchive
             }
         }
@@ -703,7 +909,11 @@ struct ConfiguredOCRService: Sendable {
             )
         }
         if engine.usesOptionalPack, packs.isInstalled(engine) {
-            return try await packs.recognize(image: image, engine: engine)
+            return try await packs.recognize(
+                image: image,
+                engine: engine,
+                mergeWrappedLines: mergeWrappedLines
+            )
         }
         return try await vision.recognize(
             image: image,

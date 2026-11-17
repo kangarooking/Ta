@@ -18,20 +18,46 @@ public enum VisionClientError: LocalizedError, Equatable {
         case .emptyResponse: "模型没有返回识别内容。"
         case .reasoningOnlyOutput(let truncated):
             truncated
-                ? "识别失败：输出上限被思考过程耗尽，还没生成正文就被截断了。请关闭该模型的深度思考，或调大输出上限后重试。"
+                ? "识别失败：输出上限被思考过程耗尽，还没生成正文就被截断了。请关闭该模型的深度思考（或改用非思考模型），或调大输出上限后重试。"
                 : "模型只返回了思考过程，没有识别正文。请关闭深度思考后重试。"
         case .server(let statusCode, let message): "模型服务错误（\(statusCode)）：\(message)"
         }
     }
+
+    init(_ failure: ProviderChatFailure) {
+        switch failure {
+        case .invalidResponse: self = .invalidResponse
+        case .emptyResponse: self = .emptyResponse
+        case .reasoningOnlyOutput(let truncated): self = .reasoningOnlyOutput(truncated: truncated)
+        case .server(let statusCode, let message): self = .server(statusCode: statusCode, message: message)
+        }
+    }
+}
+
+/// Shared defaults for the vision (image understanding) requests.
+enum VisionRequestDefaults {
+    /// Dense screenshots regularly exceed the old 2048/4096 caps.
+    static let maxOutputTokens = 8192
+    static let systemPrompt = """
+        你是截图内容识别助手。只依据图片中实际可见的内容作答，严格按用户要求的格式直接输出结果，不要寒暄、不要复述任务，也不要编造看不清的内容。
+        """
 }
 
 public struct OpenAICompatibleVisionClient: @unchecked Sendable {
     private let session: URLSession
+    let retryBaseDelay: TimeInterval
 
     public init(session: URLSession = .shared) {
-        self.session = session
+        self.init(session: session, retryBaseDelay: ProviderHTTP.defaultBaseDelay)
     }
 
+    init(session: URLSession, retryBaseDelay: TimeInterval) {
+        self.session = session
+        self.retryBaseDelay = retryBaseDelay
+    }
+
+    /// Recognises the image. When the model stopped at its output limit the
+    /// returned text ends with `ProviderOutputNotice.truncated`.
     public func recognize(
         baseURL: String,
         model: String,
@@ -43,55 +69,33 @@ public struct OpenAICompatibleVisionClient: @unchecked Sendable {
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedModel.isEmpty else { throw VisionClientError.missingModel }
-        guard !trimmedKey.isEmpty else { throw VisionClientError.missingAPIKey }
         let endpoint = try endpointURL(from: baseURL)
-
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 60
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
-
-        let dataURL = "data:\(mimeType);base64,\(imageData.base64EncodedString())"
-        var body: [String: Any] = [
-            "model": trimmedModel,
-            "messages": [[
-                "role": "user",
-                "content": [
-                    ["type": "text", "text": prompt],
-                    ["type": "image_url", "image_url": ["url": dataURL]]
-                ]
-            ]],
-            "temperature": 0,
-            "max_tokens": 4096
-        ]
-        OpenAIChatResponseSupport.applyThinkingPreference(to: &body, host: endpoint.host)
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw VisionClientError.invalidResponse
+        // Self-hosted servers on this Mac / LAN usually run without a key.
+        guard !trimmedKey.isEmpty || ProviderEndpointValidator.isLocalHost(endpoint.host ?? "") else {
+            throw VisionClientError.missingAPIKey
         }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw VisionClientError.server(
-                statusCode: httpResponse.statusCode,
-                message: errorMessage(from: data) ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+
+        do {
+            let outcome = try await ProviderChatEngine.complete(
+                ProviderChatRequest(
+                    provider: .openAICompatible,
+                    endpoint: endpoint,
+                    model: trimmedModel,
+                    apiKey: trimmedKey,
+                    systemPrompt: VisionRequestDefaults.systemPrompt,
+                    prompt: prompt,
+                    imageData: imageData,
+                    mimeType: mimeType,
+                    maxTokens: VisionRequestDefaults.maxOutputTokens,
+                    timeout: 90
+                ),
+                session: session,
+                retryBaseDelay: retryBaseDelay
             )
+            return ProviderOutputNotice.appending(to: outcome.text, truncated: outcome.truncated)
+        } catch let failure as ProviderChatFailure {
+            throw VisionClientError(failure)
         }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = object["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let text = responseText(from: message["content"]),
-              !text.isEmpty else {
-            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               OpenAIChatResponseSupport.reasoningText(in: object)?.isEmpty == false {
-                throw VisionClientError.reasoningOnlyOutput(
-                    truncated: OpenAIChatResponseSupport.isLengthTruncated(object)
-                )
-            }
-            throw VisionClientError.emptyResponse
-        }
-        return text
     }
 
     private func endpointURL(from rawValue: String) throws -> URL {
@@ -105,37 +109,14 @@ public struct OpenAICompatibleVisionClient: @unchecked Sendable {
         guard var components = URLComponents(string: trimmed), components.url != nil else {
             throw VisionClientError.invalidEndpoint("Base URL 格式无效。")
         }
-        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if path.hasSuffix("chat/completions") {
-            return components.url!
-        }
-        components.path = "/" + ([path, "chat/completions"].filter { !$0.isEmpty }.joined(separator: "/"))
+        components.path = ProviderEndpointPath.resolved(
+            provider: .openAICompatible,
+            path: components.path,
+            model: ""
+        )
         guard let url = components.url else {
             throw VisionClientError.invalidEndpoint("Base URL 格式无效。")
         }
         return url
-    }
-
-    private func responseText(from content: Any?) -> String? {
-        if let string = content as? String {
-            return string.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let parts = content as? [[String: Any]] {
-            let strings = parts.compactMap { part -> String? in
-                if let text = part["text"] as? String { return text }
-                if let text = part["content"] as? String { return text }
-                return nil
-            }
-            return strings.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return nil
-    }
-
-    private func errorMessage(from data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        if let error = object["error"] as? [String: Any], let message = error["message"] as? String {
-            return message
-        }
-        return object["message"] as? String
     }
 }

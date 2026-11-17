@@ -94,6 +94,27 @@ export function requireText(value: string | undefined, name: string): string {
   return value
 }
 
+/**
+ * Resolves the `cloud` parameter to send. Returns an empty object when neither
+ * the call nor the plugin config asks for a policy, so the user's setting in Ta
+ * applies instead of a hard-coded "auto".
+ */
+export function cloudParams(
+  requested: 'auto' | 'allow' | 'deny' | undefined,
+  configured: 'inherit' | 'auto' | 'allow' | 'deny',
+): Record<string, JSONValue> {
+  const cloud = requested ?? (configured === 'inherit' ? undefined : configured)
+  return cloud === undefined ? {} : { cloud }
+}
+
+export function requireMaxDimension(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value) || value < 16 || value > 16_384) {
+    throw new Error('maxDimension must be an integer from 16 through 16384.')
+  }
+  return value
+}
+
 export function dataString(data: JSONValue | undefined, key: string): string | undefined {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return undefined
   const value = data[key]

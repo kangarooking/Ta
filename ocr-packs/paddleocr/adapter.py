@@ -25,6 +25,8 @@ from typing import Any
 
 
 PACK_VERSION = "1.1.0"
+# Protocol 2 adds the optional per-line `lines` array (text, confidence, box).
+PROTOCOL_VERSION = 2
 DETECTION_MODEL = "PP-OCRv5_mobile_det_onnx"
 RECOGNITION_MODEL = "PP-OCRv5_mobile_rec_onnx"
 DEFAULT_DETECTION_SIDE_LIMIT = 2560
@@ -88,6 +90,32 @@ def result_payload(result: Any) -> dict[str, Any]:
     return nested if isinstance(nested, dict) else {}
 
 
+def line_box(payload: dict[str, Any], index: int) -> list[float] | None:
+    """Axis-aligned pixel box [minX, minY, maxX, maxY] (top-left origin).
+
+    Prefers the recognition polygon and falls back to `rec_boxes`. Returns
+    None when the pipeline did not report a usable position for the line.
+    """
+    polygons = payload.get("rec_polys")
+    try:
+        if polygons is not None and index < len(polygons):
+            points = [(float(point[0]), float(point[1])) for point in polygons[index]]
+            if points:
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                box = [min(xs), min(ys), max(xs), max(ys)]
+                if box[2] > box[0] and box[3] > box[1]:
+                    return [round(value, 2) for value in box]
+        boxes = payload.get("rec_boxes")
+        if boxes is not None and index < len(boxes):
+            values = [float(value) for value in boxes[index]]
+            if len(values) == 4 and values[2] > values[0] and values[3] > values[1]:
+                return [round(value, 2) for value in values]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
 def recognize(
     input_path: Path,
     pipeline: Any | None = None,
@@ -112,6 +140,7 @@ def recognize(
 
     texts: list[str] = []
     scores: list[float] = []
+    lines: list[dict[str, Any]] = []
     for prediction in predictions:
         payload = result_payload(prediction)
         page_texts = payload.get("rec_texts", [])
@@ -121,18 +150,29 @@ def recognize(
             if not text:
                 continue
             texts.append(text)
+            line_score: float | None = None
             if index < len(page_scores):
                 score = float(page_scores[index])
                 if 0.0 <= score <= 1.0:
                     scores.append(score)
+                    line_score = round(score, 6)
+            # Per-line geometry lets the host build the same layout it gets
+            # from Apple Vision (overlay translation, table detection).
+            lines.append({
+                "text": text,
+                "confidence": line_score,
+                "box": line_box(payload, index),
+            })
 
     confidence = sum(scores) / len(scores) if scores else 0.0
     finished = time.perf_counter()
     return {
         "text": "\n".join(texts),
         "confidence": round(confidence, 6),
+        "lines": lines,
         "engine": "paddleOCR",
         "version": PACK_VERSION,
+        "protocolVersion": PROTOCOL_VERSION,
         "metrics": {
             "modelLoadMilliseconds": round((loaded - started) * 1000, 1) if owns_pipeline else 0,
             "inferenceMilliseconds": round((finished - loaded) * 1000, 1),

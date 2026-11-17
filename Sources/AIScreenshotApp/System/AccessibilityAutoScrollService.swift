@@ -15,6 +15,17 @@ struct AccessibilityScrollProgress: Equatable {
     var isAtEnd: Bool {
         normalizedValue >= 0.9995
     }
+
+    /// The same position measured from the other end, so that "end" means
+    /// the top of the content. Lets the upward capture reuse every rule that
+    /// was written for the downward one.
+    var mirrored: AccessibilityScrollProgress {
+        AccessibilityScrollProgress(
+            value: maximum + minimum - value,
+            minimum: minimum,
+            maximum: maximum
+        )
+    }
 }
 
 struct AccessibilityScrollTarget {
@@ -59,6 +70,8 @@ enum AccessibilityAutoScrollService {
             )
         }
 
+        activateAccessibilityTree(for: selection.sourceApplicationProcessID)
+
         let systemWide = AXUIElementCreateSystemWide()
         var hitElement: AXUIElement?
         guard AXUIElementCopyElementAtPosition(
@@ -88,27 +101,26 @@ enum AccessibilityAutoScrollService {
             )
         }
 
+        // Nested scroll areas are common (a code block or text field inside a
+        // chat timeline). The nearest scrollable ancestor is often that inner
+        // widget, which is already "at the end" and would finish the capture
+        // after one frame. Collect every scrollable ancestor and lock the one
+        // that covers the selection best.
+        let selectionRect = selectionRectInEventSpace(for: selection)
+        var best: (target: AccessibilityScrollTarget, coverage: CGFloat)?
         var current: AXUIElement? = hitElement
         var visited = 0
         while let element = current, visited < 32 {
-            if let scrollBar = copyElementAttribute(
+            var scrollBar = copyElementAttribute(
                 element,
                 attribute: kAXVerticalScrollBarAttribute as String
-            ) {
-                let candidate = AccessibilityScrollTarget(
-                    sourceProcessID: selection.sourceApplicationProcessID,
-                    eventLocation: eventLocation,
-                    scrollContainer: element,
-                    verticalScrollBar: scrollBar
-                )
-                if progress(of: candidate) != nil {
-                    return candidate
-                }
+            )
+            if scrollBar == nil,
+               copyStringAttribute(element, attribute: kAXRoleAttribute as String)
+                == kAXScrollAreaRole as String {
+                scrollBar = findVerticalScrollBar(in: element, maximumDepth: 2)
             }
-
-            let role = copyStringAttribute(element, attribute: kAXRoleAttribute as String)
-            if role == kAXScrollAreaRole as String,
-               let scrollBar = findVerticalScrollBar(in: element, maximumDepth: 2) {
+            if let scrollBar {
                 let candidate = AccessibilityScrollTarget(
                     sourceProcessID: selection.sourceApplicationProcessID,
                     eventLocation: eventLocation,
@@ -116,13 +128,20 @@ enum AccessibilityAutoScrollService {
                     verticalScrollBar: scrollBar
                 )
                 if progress(of: candidate) != nil {
-                    return candidate
+                    let coverage = coverageScore(
+                        containerFrame: copyFrame(element),
+                        selectionRect: selectionRect
+                    )
+                    if best == nil || coverage > (best?.coverage ?? 0) + 0.05 {
+                        best = (candidate, coverage)
+                    }
                 }
             }
 
             current = copyElementAttribute(element, attribute: kAXParentAttribute as String)
             visited += 1
         }
+        if let best { return best.target }
 
         return AccessibilityScrollTarget(
             sourceProcessID: selection.sourceApplicationProcessID,
@@ -130,6 +149,99 @@ enum AccessibilityAutoScrollService {
             scrollContainer: hitElement,
             verticalScrollBar: nil
         )
+    }
+
+    /// Fraction of the selection covered by a scroll container. Containers
+    /// without a readable frame score zero, so the nearest one wins by order.
+    static func coverageScore(containerFrame: CGRect?, selectionRect: CGRect) -> CGFloat {
+        guard let containerFrame,
+              selectionRect.width > 0,
+              selectionRect.height > 0 else { return 0 }
+        let overlap = containerFrame.intersection(selectionRect)
+        guard !overlap.isNull else { return 0 }
+        return (overlap.width * overlap.height) / (selectionRect.width * selectionRect.height)
+    }
+
+    /// Chromium and Electron do not build their accessibility tree until an
+    /// assistive client asks for it, so Codex, VS Code, Feishu and similar
+    /// apps expose no scroll area at all. `AXManualAccessibility` is the
+    /// Electron-supported switch for non-VoiceOver clients; other apps reject
+    /// the attribute harmlessly. The tree fills in asynchronously, so callers
+    /// should resolve the target again a moment later.
+    static func activateAccessibilityTree(for processID: pid_t?) {
+        guard isGranted, let processID, processID > 0 else { return }
+        let application = AXUIElementCreateApplication(processID)
+        _ = AXUIElementSetAttributeValue(
+            application,
+            "AXManualAccessibility" as CFString,
+            kCFBooleanTrue
+        )
+    }
+
+    /// The selection rectangle in the top-left based global space used by
+    /// CGEvent and the Accessibility API.
+    static func selectionRectInEventSpace(for selection: CaptureSelection) -> CGRect {
+        let displayBounds = CGDisplayBounds(selection.displayID)
+        return CGRect(
+            x: displayBounds.minX + selection.globalRect.minX - selection.screenFrame.minX,
+            y: displayBounds.minY + selection.screenFrame.maxY - selection.globalRect.maxY,
+            width: selection.globalRect.width,
+            height: selection.globalRect.height
+        )
+    }
+
+    static func cursorLocation() -> CGPoint? {
+        CGEvent(source: nil)?.location
+    }
+
+    /// The window server routes synthetic wheel events to the window under
+    /// the real pointer, not to `CGEvent.location`. Auto scroll therefore only
+    /// works while the pointer rests inside the captured area.
+    static func cursorIsInside(_ selection: CaptureSelection, inset: CGFloat = 4) -> Bool {
+        guard let location = cursorLocation() else { return true }
+        return pointIsInside(location, selectionRect: selectionRectInEventSpace(for: selection), inset: inset)
+    }
+
+    static func pointIsInside(_ point: CGPoint, selectionRect: CGRect, inset: CGFloat) -> Bool {
+        let usable = selectionRect.width > inset * 4 && selectionRect.height > inset * 4
+            ? selectionRect.insetBy(dx: inset, dy: inset)
+            : selectionRect
+        return usable.contains(point)
+    }
+
+    /// Parks the pointer on the scroll target once, when auto scroll starts.
+    /// Returns true when the pointer had to be moved.
+    @discardableResult
+    static func movePointerIntoSelectionIfNeeded(
+        _ selection: CaptureSelection,
+        target: AccessibilityScrollTarget?
+    ) -> Bool {
+        guard !cursorIsInside(selection, inset: 12) else { return false }
+        let location = target?.eventLocation ?? scrollTargetLocation(for: selection)
+        CGWarpMouseCursorPosition(location)
+        CGAssociateMouseAndMouseCursorPosition(1)
+        return true
+    }
+
+    private static func copyFrame(_ element: AXUIElement) -> CGRect? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(
+                element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue,
+              let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(
+            unsafeDowncast(positionValue as AnyObject, to: AXValue.self), .cgPoint, &position),
+              AXValueGetValue(
+                unsafeDowncast(sizeValue as AnyObject, to: AXValue.self), .cgSize, &size)
+        else { return nil }
+        return CGRect(origin: position, size: size)
     }
 
     static func progress(of target: AccessibilityScrollTarget) -> AccessibilityScrollProgress? {

@@ -1,7 +1,5 @@
 import CoreGraphics
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 import AIScreenshotCore
 
 enum DeepSeekOCRRecognitionError: LocalizedError {
@@ -27,37 +25,29 @@ struct DeepSeekOCRRecognitionService: @unchecked Sendable {
         let modeRaw = defaults.string(forKey: "deepSeekOCRPromptMode") ?? DeepSeekOCRPromptMode.plainText.rawValue
         let mode = DeepSeekOCRPromptMode(rawValue: modeRaw) ?? .plainText
         let apiKey = try secretStore.read(account: Self.keychainAccount) ?? ""
-        let imageData = try encodePNG(prepareOCRImage(image, maximumDimension: 2560))
-        let text = try await client.recognize(
+        let imageData: Data
+        do {
+            imageData = try ModelImageEncoder.jpegData(from: image)
+        } catch {
+            throw DeepSeekOCRRecognitionError.imageEncodingFailed
+        }
+        let response = try await client.recognize(
             baseURL: baseURL,
             model: model,
             apiKey: apiKey,
             imageData: imageData,
+            mimeType: ModelImageEncoder.mimeType,
             mode: mode
         )
+        // Classify the recognised text only; the truncation notice (if any)
+        // stays at the end of what the user receives.
+        let text = ProviderOutputNotice.removingNotice(from: response)
         return OCRResult(
-            text: text,
+            text: response,
             contentType: ContentClassifier().classify(text),
-            confidence: 0.85,
+            confidence: ProviderOutputNotice.isTruncated(response) ? 0.6 : 0.85,
             languages: languages,
             engine: .deepSeekOCR2
         )
-    }
-
-    private func encodePNG(_ image: CGImage) throws -> Data {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data,
-            UTType.png.identifier as CFString,
-            1,
-            nil
-        ) else {
-            throw DeepSeekOCRRecognitionError.imageEncodingFailed
-        }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            throw DeepSeekOCRRecognitionError.imageEncodingFailed
-        }
-        return data as Data
     }
 }

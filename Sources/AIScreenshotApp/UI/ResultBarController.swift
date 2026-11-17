@@ -27,6 +27,8 @@ final class ResultBarController {
         panel.contentView = hostingView
         position(panel)
         panel.orderFrontRegardless()
+        // Ta's own toast must never be baked into the next screenshot.
+        CaptureExclusionRegistry.shared.register(panel)
         self.panel = panel
 
         // Processing states remain visible until they are replaced. Every final
@@ -47,7 +49,9 @@ final class ResultBarController {
     func hide() {
         dismissalTask?.cancel()
         dismissalTask = nil
-        panel?.orderOut(nil)
+        guard let panel else { return }
+        panel.orderOut(nil)
+        CaptureExclusionRegistry.shared.unregister(panel)
     }
 
     private func makePanel() -> NSPanel {
@@ -69,6 +73,8 @@ final class ResultBarController {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.ignoresMouseEvents = false
+        // The toast is drawn with the fixed light "paper" palette.
+        panel.appearance = NSAppearance(named: .aqua)
         return panel
     }
 

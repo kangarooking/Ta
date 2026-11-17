@@ -180,6 +180,257 @@ struct TaAgentCapabilityServiceTests {
         #expect(await fixture.dependenciesProbe.analyzeCount == 0)
     }
 
+    @Test("the user's deny setting cannot be overridden by cloud=allow or cloud=auto")
+    func userDenyBeatsRequestParameter() async throws {
+        let fixture = try CapabilityFixture(privacyPolicy: .testing(cloud: .deny))
+        _ = await fixture.service.handle(request(.captureFrontmost))
+
+        for requested in ["allow", "auto"] {
+            let analyze = await fixture.service.handle(request(
+                .analyzeImage,
+                params: ["cloud": .string(requested)]
+            ))
+            let translate = await fixture.service.handle(request(
+                .translateText,
+                params: ["text": .string("hello"), "cloud": .string(requested)]
+            ))
+            let translateImage = await fixture.service.handle(request(
+                .translateImage,
+                params: ["cloud": .string(requested)]
+            ))
+            #expect(analyze.error?.code == .cloudUploadNotAllowed)
+            #expect(translate.error?.code == .cloudUploadNotAllowed)
+            #expect(translateImage.error?.code == .cloudUploadNotAllowed)
+            #expect(analyze.meta?.cloudUploaded == false)
+        }
+        #expect(await fixture.dependenciesProbe.analyzeCount == 0)
+        #expect(await fixture.dependenciesProbe.translateCount == 0)
+    }
+
+    @Test("cloud OCR honours the user's deny setting")
+    func cloudOCRHonoursDeny() async throws {
+        let fixture = try CapabilityFixture(privacyPolicy: .testing(cloud: .deny), ocrEngine: .deepSeekOCR2)
+        _ = await fixture.service.handle(request(.captureFrontmost))
+
+        let response = await fixture.service.handle(request(
+            .recognizeOCR,
+            params: ["cloud": .string("allow")]
+        ))
+
+        #expect(response.error?.code == .cloudUploadNotAllowed)
+    }
+
+    @Test("cloudUploaded is true when the upload happened but the call then failed")
+    func cloudUploadedReportedOnFailure() async throws {
+        let fixture = try CapabilityFixture(cloudCallsFail: true)
+        _ = await fixture.service.handle(request(.captureFrontmost))
+
+        let analyze = await fixture.service.handle(request(.analyzeImage))
+        let translate = await fixture.service.handle(request(
+            .translateText,
+            params: ["text": .string("hello")]
+        ))
+
+        #expect(!analyze.ok)
+        #expect(analyze.meta?.cloudUploaded == true)
+        #expect(!translate.ok)
+        #expect(translate.meta?.cloudUploaded == true)
+        // A request rejected before any upload still reports false.
+        let invalid = await fixture.service.handle(request(
+            .analyzeImage,
+            params: ["task": .string("no-such-task")]
+        ))
+        #expect(invalid.error?.code == .invalidRequest)
+        #expect(invalid.meta?.cloudUploaded == false)
+    }
+
+    @Test("deliver.save only writes PNG files to safe, non-existing destinations")
+    func saveDestinationRestrictions() async throws {
+        let fixture = try CapabilityFixture()
+        _ = await fixture.service.handle(request(.captureFrontmost))
+        func save(_ path: String, overwrite: Bool? = nil) async -> AgentResponseEnvelope {
+            var params: [String: JSONValue] = ["path": .string(path)]
+            if let overwrite { params["overwrite"] = .bool(overwrite) }
+            return await fixture.service.handle(request(.deliverSave, params: params))
+        }
+
+        let hidden = await save(fixture.root.appendingPathComponent(".zshrc.png").path)
+        let hiddenDirectory = await save(fixture.root.appendingPathComponent(".ssh/key.png").path)
+        let wrongExtension = await save(fixture.root.appendingPathComponent("script.sh").path)
+        let system = await save("/usr/local/bin/ta-shot.png")
+        let relative = await save("relative.png")
+        for response in [hidden, hiddenDirectory, wrongExtension, system, relative] {
+            #expect(response.error?.code == .invalidRequest)
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("script.sh").path))
+
+        // A missing extension is completed, and the response reports the real path.
+        let bare = await save(fixture.root.appendingPathComponent("shot").path)
+        #expect(bare.ok)
+        let barePath = try #require(bare.data?.objectValue?["path"]?.stringValue)
+        #expect(barePath.hasSuffix("/shot.png"))
+        #expect(FileManager.default.fileExists(atPath: barePath))
+
+        // Existing files are protected unless overwrite is explicit.
+        let again = await save(barePath)
+        #expect(again.error?.code == .invalidRequest)
+        #expect(again.error?.message.contains("overwrite") == true)
+        let explicitNoOverwrite = await save(barePath, overwrite: false)
+        #expect(explicitNoOverwrite.error?.code == .invalidRequest)
+        let overwritten = await save(barePath, overwrite: true)
+        #expect(overwritten.ok)
+    }
+
+    @Test("inputPath only accepts regular image files")
+    func inputPathRestrictions() async throws {
+        let fixture = try CapabilityFixture()
+        let secret = fixture.root.appendingPathComponent("secret.txt")
+        try Data("token".utf8).write(to: secret)
+        let directory = fixture.root.appendingPathComponent("folder.png", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let link = fixture.root.appendingPathComponent("link.png")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: secret)
+
+        for path in [secret.path, directory.path, link.path, fixture.root.appendingPathComponent("missing.png").path, "relative.png"] {
+            let response = await fixture.service.handle(request(
+                .recognizeOCR,
+                params: ["inputPath": .string(path)]
+            ))
+            #expect(response.error?.code == .invalidRequest, "accepted \(path)")
+        }
+
+        // A real artifact produced by capture is accepted by explicit path.
+        let capture = await fixture.service.handle(request(.captureFrontmost))
+        let artifact = try #require(capture.artifacts.first)
+        let ocr = await fixture.service.handle(request(
+            .recognizeOCR,
+            params: ["inputPath": .string(artifact.path)]
+        ))
+        #expect(ocr.ok)
+    }
+
+    @Test("capture reports pixel size and scale, and validates maxDimension")
+    func captureImageMetadataAndMaxDimension() async throws {
+        let fixture = try CapabilityFixture()
+
+        let capture = await fixture.service.handle(request(
+            .captureFrontmost,
+            params: ["maxDimension": .integer(1_568)]
+        ))
+        let image = try #require(capture.data?.objectValue?["image"]?.objectValue)
+        #expect(image["width"] == .integer(4))
+        #expect(image["height"] == .integer(3))
+        #expect(image["originalWidth"] == .integer(4))
+        #expect(image["downscaled"] == .bool(false))
+        #expect(image["pixelsPerPoint"] == .number(4.0 / 400.0))
+
+        for bad in [JSONValue.integer(0), .integer(8), .integer(100_000), .string("big")] {
+            let response = await fixture.service.handle(request(
+                .captureFrontmost,
+                params: ["maxDimension": bad]
+            ))
+            #expect(response.error?.code == .invalidRequest)
+        }
+    }
+
+    @Test("downscaling bounds the longer side and keeps the aspect ratio")
+    func downscaleHelper() throws {
+        let context = try #require(CGContext(
+            data: nil, width: 400, height: 200, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let source = try #require(context.makeImage())
+
+        let scaled = try TaAgentCapabilityService.downscaled(source, maxDimension: 100)
+        #expect(scaled.width == 100)
+        #expect(scaled.height == 50)
+        let untouched = try TaAgentCapabilityService.downscaled(source, maxDimension: 1_568)
+        #expect(untouched.width == 400)
+        #expect(untouched.height == 200)
+    }
+
+    @Test("capture.window resolves an app name or title fragment in one call")
+    func captureByAppOrTitle() async throws {
+        let fixture = try CapabilityFixture()
+
+        let byApp = await fixture.service.handle(request(.captureWindow, params: ["app": .string("safari")]))
+        let byBundle = await fixture.service.handle(request(
+            .captureWindow,
+            params: ["app": .string("com.apple.Safari")]
+        ))
+        let byTitle = await fixture.service.handle(request(.captureWindow, params: ["title": .string("exam")]))
+        let missing = await fixture.service.handle(request(.captureWindow, params: ["app": .string("Finder")]))
+        let wrongTitle = await fixture.service.handle(request(
+            .captureWindow,
+            params: ["app": .string("Safari"), "title": .string("nope")]
+        ))
+        let noTarget = await fixture.service.handle(request(.captureWindow))
+
+        for response in [byApp, byBundle, byTitle] {
+            #expect(response.ok)
+            #expect(response.data?.objectValue?["target"]?.objectValue?["windowId"] == .integer(42))
+        }
+        #expect(missing.error?.code == .targetNotFound)
+        #expect(wrongTitle.error?.code == .targetNotFound)
+        #expect(noTarget.error?.code == .invalidRequest)
+    }
+
+    @Test("window matching prefers exact app names, real windows, and the frontmost candidate")
+    func bestWindowRanking() {
+        func window(_ id: UInt32, _ app: String, _ title: String?, size: CGSize, z: Int) -> TaAgentWindowTarget {
+            TaAgentWindowTarget(
+                id: id, ownerProcessID: 1, appName: app, bundleIdentifier: nil, title: title,
+                frame: CGRect(origin: .zero, size: size), zOrder: z
+            )
+        }
+        let windows = [
+            window(1, "Safari Technology Preview", "Docs", size: CGSize(width: 800, height: 600), z: 0),
+            window(2, "Safari", nil, size: CGSize(width: 30, height: 24), z: 1),
+            window(3, "Safari", "Inbox", size: CGSize(width: 800, height: 600), z: 3),
+            window(4, "Safari", "Docs", size: CGSize(width: 800, height: 600), z: 2)
+        ]
+
+        #expect(TaAgentCapabilityService.bestWindow(in: windows, app: "safari", title: nil)?.id == 4)
+        #expect(TaAgentCapabilityService.bestWindow(in: windows, app: "safari", title: "inbox")?.id == 3)
+        #expect(TaAgentCapabilityService.bestWindow(in: windows, app: "technology", title: nil)?.id == 1)
+        #expect(TaAgentCapabilityService.bestWindow(in: windows, app: nil, title: "docs")?.id == 1)
+        #expect(TaAgentCapabilityService.bestWindow(in: windows, app: "chrome", title: nil) == nil)
+    }
+
+    @Test("OCR returns per-line pixel boxes only when boxes is requested")
+    func ocrLineBoxes() async throws {
+        let fixture = try CapabilityFixture()
+        _ = await fixture.service.handle(request(.captureFrontmost))
+
+        let plain = await fixture.service.handle(request(.recognizeOCR))
+        #expect(plain.data?.objectValue?["lines"] == nil)
+
+        let boxed = await fixture.service.handle(request(.recognizeOCR, params: ["boxes": .bool(true)]))
+        let lines = try #require(boxed.data?.objectValue?["lines"]?.arrayValue)
+        #expect(lines.count == 1)
+        #expect(lines.first?.objectValue?["text"] == .string("hello from OCR"))
+        // Normalized (0.25, 0.5, 0.5, 0.25) with a bottom-left origin on a 4x3 image.
+        #expect(lines.first?.objectValue?["box"] == .object([
+            "x": .number(1), "y": .number(0.75), "width": .number(2), "height": .number(0.75)
+        ]))
+        #expect(boxed.data?.objectValue?["imageWidth"] == .integer(4))
+        #expect(boxed.data?.objectValue?["boxesAvailable"] == .bool(true))
+    }
+
+    @Test("capabilities advertise the optional parameters and limits")
+    func capabilitiesAdvertiseOptionalParams() async throws {
+        let fixture = try CapabilityFixture()
+
+        let response = await fixture.service.handle(request(.systemCapabilities))
+        let optional = try #require(response.data?.objectValue?["optionalParams"]?.objectValue)
+
+        #expect(optional["capture.*"]?.arrayValue?.contains(.string("maxDimension")) == true)
+        #expect(optional["capture.window"]?.arrayValue?.contains(.string("app")) == true)
+        #expect(optional["recognize.ocr"]?.arrayValue?.contains(.string("boxes")) == true)
+        #expect(optional["deliver.save"]?.arrayValue?.contains(.string("overwrite")) == true)
+    }
+
     @Test("window list filters by either app name or bundle identifier")
     func windowListAppFilter() async throws {
         let fixture = try CapabilityFixture()
@@ -245,7 +496,9 @@ private struct CapabilityFixture {
 
     init(
         privacyPolicy: TaAgentPrivacyPolicy? = .testingAllowed,
-        privacyPolicyProvider: @escaping @Sendable () -> TaAgentPrivacyPolicy = { .load() }
+        privacyPolicyProvider: @escaping @Sendable () -> TaAgentPrivacyPolicy = { .load() },
+        ocrEngine: OCREnginePreference = .appleVision,
+        cloudCallsFail: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ta-capability-\(UUID().uuidString)", isDirectory: true)
@@ -261,21 +514,36 @@ private struct CapabilityFixture {
             appVersion: { "1.0.0-test" },
             screenPermission: { true },
             accessibilityPermission: { true },
-            ocrEngine: { .appleVision },
+            ocrEngine: { ocrEngine },
             visionConfigured: { true },
             translationConfigured: { true },
             recognizeOCR: { _, _, _ in
                 OCRResult(
                     text: "hello from OCR",
                     contentType: .plainText,
-                    confidence: 0.98
+                    confidence: 0.98,
+                    document: OCRDocumentLayout(
+                        blocks: [OCRDocumentBlock(lines: [
+                            OCRTextLine(
+                                text: "hello from OCR",
+                                confidence: 0.98,
+                                boundingBox: CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.25)
+                            )
+                        ])],
+                        tables: []
+                    )
                 )
             },
             analyzeImage: { _, _ in
                 await probe.recordAnalyze()
+                if cloudCallsFail { throw CapabilityTestError.providerFailed }
                 return "image summary"
             },
-            translateText: { _ in "你好" },
+            translateText: { _ in
+                await probe.recordTranslate()
+                if cloudCallsFail { throw CapabilityTestError.providerFailed }
+                return "你好"
+            },
             translateImage: { _ in "图片译文" },
             copyText: { _ in true },
             copyImage: { _ in true }
@@ -307,7 +575,13 @@ private final class MutablePrivacyPolicy: @unchecked Sendable {
 
 private actor CapabilityDependenciesProbe {
     private(set) var analyzeCount = 0
+    private(set) var translateCount = 0
     func recordAnalyze() { analyzeCount += 1 }
+    func recordTranslate() { translateCount += 1 }
+}
+
+private enum CapabilityTestError: Error {
+    case providerFailed
 }
 
 private actor CapabilityCaptureBackend: TaAgentCaptureBackend {
@@ -360,13 +634,17 @@ private actor CapabilityCaptureBackend: TaAgentCaptureBackend {
 }
 
 private extension TaAgentPrivacyPolicy {
-    static let testingAllowed = TaAgentPrivacyPolicy(
-        isEnabled: true,
-        automaticCaptureAllowed: true,
-        cloudPolicy: .allow,
-        blockedBundleIdentifiers: [],
-        allowCaptureTa: true
-    )
+    static let testingAllowed = testing(cloud: .allow)
+
+    static func testing(cloud: AgentCloudPolicy) -> TaAgentPrivacyPolicy {
+        TaAgentPrivacyPolicy(
+            isEnabled: true,
+            automaticCaptureAllowed: true,
+            cloudPolicy: cloud,
+            blockedBundleIdentifiers: [],
+            allowCaptureTa: true
+        )
+    }
 }
 
 private extension JSONValue {
@@ -375,6 +653,11 @@ private extension JSONValue {
         return value
     }
 
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
 
     var arrayValue: [JSONValue]? {
         guard case .array(let value) = self else { return nil }

@@ -48,7 +48,7 @@ final class AppModel: ObservableObject {
         startAgentBridge()
 
         do {
-            try hotKeyManager.registerDefaults(
+            let failures = try hotKeyManager.registerDefaults(
                 interactiveCapture: { [weak self] in self?.startCapture(.interactive) },
                 intelligentCapture: { [weak self] in self?.startCapture(.intelligent) },
                 translationCapture: { [weak self] in self?.startCapture(.translation) },
@@ -56,8 +56,13 @@ final class AppModel: ObservableObject {
                 pinCapture: { [weak self] in self?.startCapture(.pin) },
                 longCapture: { [weak self] in self?.startCapture(.long) }
             )
+            if let summary = GlobalHotKeyRegistrationFailure.summary(for: failures) {
+                // The other shortcuts are live; name the one that is not so
+                // the user knows what to rebind.
+                statusText = summary
+            }
         } catch {
-            statusText = "快捷键注册失败"
+            statusText = (error as? LocalizedError)?.errorDescription ?? "快捷键注册失败"
         }
         hotKeyFailureObserver = NotificationCenter.default.addObserver(
             forName: HotKeyPreferences.registrationFailedNotification,
@@ -166,6 +171,12 @@ final class AppModel: ObservableObject {
     }
 
     func startCapture(_ mode: CaptureMode) {
+        if isCapturing {
+            // A job that is only waiting on recognition/translation (possibly
+            // a hung network request) must not block the next capture. The
+            // selection overlay and the inline editor are never interrupted.
+            guard captureCoordinator.cancelInterruptibleJob() else { return }
+        }
         guard !isCapturing else { return }
         NotificationCenter.default.post(name: .taMenuBarShouldClose, object: nil)
         isCapturing = true
@@ -190,6 +201,11 @@ final class AppModel: ObservableObject {
                 statusText = message
             }
         }
+    }
+
+    func openCaptureHistoryFolder() {
+        NotificationCenter.default.post(name: .taMenuBarShouldClose, object: nil)
+        CaptureHistoryService().openFolder()
     }
 
     func pinClipboardContent() {

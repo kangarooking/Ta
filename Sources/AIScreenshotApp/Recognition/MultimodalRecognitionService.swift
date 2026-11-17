@@ -44,7 +44,41 @@ struct MultimodalRecognitionService {
 
     var isConfigured: Bool {
         guard let state = try? profileStore.loadState(), let profile = state.activeProfile else { return false }
-        return profile.validationMessage() == nil && profileStore.hasAPIKey(for: profile.id)
+        return profile.validationMessage() == nil
+            && (profileStore.hasAPIKey(for: profile.id) || Self.apiKeyIsOptional(for: profile))
+    }
+
+    /// Self-hosted OpenAI-compatible servers on this Mac / LAN (Ollama,
+    /// LM Studio, vLLM...) run without an API key.
+    static func apiKeyIsOptional(for profile: AIProviderProfile) -> Bool {
+        profile.providerKind == .openAICompatible
+            && ProviderEndpointValidator().isLocalEndpoint(profile.baseURL)
+    }
+
+    /// Language for explanations written by the model. An explicit
+    /// `multimodalResponseLanguage` preference wins; otherwise the user's
+    /// preferred system language, with Chinese kept as the default.
+    static func responseLanguage(
+        defaults: UserDefaults = .standard,
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> String? {
+        if let configured = defaults.string(forKey: "multimodalResponseLanguage")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !configured.isEmpty {
+            return configured
+        }
+        guard let identifier = preferredLanguages.first else { return nil }
+        let code = Locale.Language(identifier: identifier).languageCode?.identifier ?? ""
+        guard !code.isEmpty, code != "zh" else { return nil }
+        return Locale(identifier: "en_US").localizedString(forLanguageCode: code)
+    }
+
+    private func apiKey(for profile: AIProviderProfile) throws -> String {
+        do {
+            return try profileStore.apiKey(for: profile.id)
+        } catch {
+            guard Self.apiKeyIsOptional(for: profile) else { throw error }
+            return ""
+        }
     }
 
     var activeVisionModelName: String {
@@ -57,18 +91,18 @@ struct MultimodalRecognitionService {
         if let validation = profile.validationMessage() {
             throw AIProviderProfileStoreError.translationIneligible(validation)
         }
-        let apiKey = try profileStore.apiKey(for: profile.id)
+        let apiKey = try self.apiKey(for: profile)
         let taskRaw = UserDefaults.standard.string(forKey: "multimodalTaskTemplate")
             ?? MultimodalTaskTemplate.general.rawValue
         let selectedTask = task ?? MultimodalTaskTemplate(rawValue: taskRaw) ?? .general
-        let imageData = try encodeJPEG(image, maximumDimension: 2048)
+        let imageData = try encodeJPEG(image, maximumDimension: ModelImageEncoder.defaultMaximumDimension)
         let response = try await client.recognize(
             provider: profile.providerKind,
             baseURL: profile.baseURL,
             model: profile.visionModel,
             apiKey: apiKey,
             imageData: imageData,
-            prompt: selectedTask.prompt
+            prompt: selectedTask.prompt(responseLanguage: Self.responseLanguage())
         )
         guard selectedTask == .general,
               GeneralVisionResponsePolicy.shouldRetry(response) else {
@@ -85,7 +119,7 @@ struct MultimodalRecognitionService {
     }
 
     func testConnection(profile: AIProviderProfile, apiKey: String? = nil) async throws -> String {
-        let key = try apiKey ?? profileStore.apiKey(for: profile.id)
+        let key = try apiKey ?? self.apiKey(for: profile)
         let image = try makeTestImage()
         let imageData = try encodeJPEG(image, maximumDimension: 1024)
         return try await client.recognize(
@@ -99,40 +133,11 @@ struct MultimodalRecognitionService {
     }
 
     private func encodeJPEG(_ image: CGImage, maximumDimension: Int) throws -> Data {
-        let sourceSize = CGSize(width: image.width, height: image.height)
-        let scale = min(1, CGFloat(maximumDimension) / max(sourceSize.width, sourceSize.height))
-        let width = max(1, Int((sourceSize.width * scale).rounded()))
-        let height = max(1, Int((sourceSize.height * scale).rounded()))
-        guard let representation = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: width,
-            pixelsHigh: height,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else {
+        do {
+            return try ModelImageEncoder.jpegData(from: image, maximumDimension: maximumDimension)
+        } catch {
             throw MultimodalRecognitionError.imageEncodingFailed
         }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: representation)
-        NSImage(cgImage: image, size: sourceSize).draw(
-            in: CGRect(x: 0, y: 0, width: width, height: height),
-            from: .zero,
-            operation: .copy,
-            fraction: 1
-        )
-        NSGraphicsContext.restoreGraphicsState()
-        guard let data = representation.representation(
-            using: .jpeg,
-            properties: [.compressionFactor: 0.88]
-        ) else {
-            throw MultimodalRecognitionError.imageEncodingFailed
-        }
-        return data
     }
 
     private func makeTestImage() throws -> CGImage {

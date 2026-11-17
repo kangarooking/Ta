@@ -18,8 +18,30 @@ private struct OCRWorkerRecognitionResponse: Decodable {
     let ok: Bool
     let text: String?
     let confidence: Float?
+    let lines: [OCRPackLine]?
     let error: String?
 }
+
+/// Cancellation signal shared between the awaiting task and the worker
+/// queue, which blocks in `poll` and cannot observe `Task.isCancelled`.
+private final class OCRWorkerCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
+private struct OCRWorkerTimeout: Error {}
 
 /// Owns the optional OCR subprocess on a private serial queue. Blocking pipe
 /// reads never run on the main actor, and serialization prevents responses
@@ -36,15 +58,25 @@ final class PersistentOCRWorker: @unchecked Sendable {
     private var processKey: String?
     private var activityGeneration = 0
 
-    init(idleTimeout: TimeInterval = 300) {
+    /// A cold start loads the models; a warm request takes about a second.
+    private let startupTimeout: TimeInterval
+    private let requestTimeout: TimeInterval
+
+    init(
+        idleTimeout: TimeInterval = 300,
+        startupTimeout: TimeInterval = 60,
+        requestTimeout: TimeInterval = 30
+    ) {
         self.idleTimeout = idleTimeout
+        self.startupTimeout = startupTimeout
+        self.requestTimeout = requestTimeout
     }
 
     func warm(executable: URL, arguments: [String]) {
         queue.async { [weak self] in
             guard let self else { return }
             do {
-                try self.startIfNeeded(executable: executable, arguments: arguments)
+                try self.startIfNeeded(executable: executable, arguments: arguments, cancellation: nil)
                 self.scheduleIdleStop()
             } catch {
                 self.stopSync()
@@ -52,31 +84,40 @@ final class PersistentOCRWorker: @unchecked Sendable {
         }
     }
 
+    /// Honours task cancellation: a cancelled request stops waiting within
+    /// ~100 ms and the in-flight worker is terminated. The worst-case wait
+    /// is one start-up plus one request timeout (no retry after a timeout).
     func recognize(
         executable: URL,
         arguments: [String],
         imageURL: URL,
         detectionSideLimit: Int = 2560
     ) async throws -> OCRPackResponse {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<OCRPackResponse, Error>) in
-            queue.async { [weak self] in
-                guard let self else {
-                    continuation.resume(throwing: OptionalOCRPackError.executionFailed("OCR Worker 已释放"))
-                    return
-                }
-                do {
-                    let response = try self.recognizeSync(
-                        executable: executable,
-                        arguments: arguments,
-                        imageURL: imageURL,
-                        detectionSideLimit: detectionSideLimit
-                    )
-                    continuation.resume(returning: response)
-                } catch {
-                    continuation.resume(throwing: error)
+        let cancellation = OCRWorkerCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<OCRPackResponse, Error>) in
+                queue.async { [weak self] in
+                    guard let self else {
+                        continuation.resume(throwing: OptionalOCRPackError.executionFailed("OCR Worker 已释放"))
+                        return
+                    }
+                    do {
+                        let response = try self.recognizeSync(
+                            executable: executable,
+                            arguments: arguments,
+                            imageURL: imageURL,
+                            detectionSideLimit: detectionSideLimit,
+                            cancellation: cancellation
+                        )
+                        continuation.resume(returning: response)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -88,12 +129,14 @@ final class PersistentOCRWorker: @unchecked Sendable {
         executable: URL,
         arguments: [String],
         imageURL: URL,
-        detectionSideLimit: Int
+        detectionSideLimit: Int,
+        cancellation: OCRWorkerCancellation
     ) throws -> OCRPackResponse {
         var lastError: Error = OptionalOCRPackError.invalidResponse
         for attempt in 0..<2 {
+            if cancellation.isCancelled { throw CancellationError() }
             do {
-                try startIfNeeded(executable: executable, arguments: arguments)
+                try startIfNeeded(executable: executable, arguments: arguments, cancellation: cancellation)
                 let id = UUID().uuidString
                 let request = OCRWorkerRequest(
                     id: id,
@@ -102,7 +145,7 @@ final class PersistentOCRWorker: @unchecked Sendable {
                     detectionSideLimit: detectionSideLimit
                 )
                 try write(request)
-                let data = try readLine(timeout: 30)
+                let data = try readLine(timeout: requestTimeout, cancellation: cancellation)
                 let envelope = try JSONDecoder().decode(OCRWorkerRecognitionResponse.self, from: data)
                 guard envelope.id == id else { throw OptionalOCRPackError.invalidResponse }
                 guard envelope.ok else {
@@ -112,7 +155,15 @@ final class PersistentOCRWorker: @unchecked Sendable {
                     throw OptionalOCRPackError.invalidResponse
                 }
                 scheduleIdleStop()
-                return OCRPackResponse(text: text, confidence: confidence)
+                return OCRPackResponse(text: text, confidence: confidence, lines: envelope.lines)
+            } catch is CancellationError {
+                // The worker may be mid-request; restart it next time.
+                stopSync()
+                throw CancellationError()
+            } catch is OCRWorkerTimeout {
+                // A hung worker is not retried: that would double the wait.
+                stopSync()
+                throw OptionalOCRPackError.executionFailed("OCR Worker 响应超时")
             } catch {
                 lastError = error
                 stopSync()
@@ -122,7 +173,11 @@ final class PersistentOCRWorker: @unchecked Sendable {
         throw lastError
     }
 
-    private func startIfNeeded(executable: URL, arguments: [String]) throws {
+    private func startIfNeeded(
+        executable: URL,
+        arguments: [String],
+        cancellation: OCRWorkerCancellation?
+    ) throws {
         let key = ([executable.path] + arguments).joined(separator: "\u{0}")
         if let process, process.isRunning, processKey == key {
             return
@@ -139,6 +194,10 @@ final class PersistentOCRWorker: @unchecked Sendable {
         newProcess.standardError = FileHandle.nullDevice
         try newProcess.run()
 
+        // Writing to a worker that just died must fail with EPIPE instead of
+        // raising SIGPIPE, which would terminate the whole app.
+        _ = fcntl(inputPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+
         process = newProcess
         inputHandle = inputPipe.fileHandleForWriting
         outputHandle = outputPipe.fileHandleForReading
@@ -146,7 +205,7 @@ final class PersistentOCRWorker: @unchecked Sendable {
         processKey = key
 
         do {
-            let readyData = try readLine(timeout: 120)
+            let readyData = try readLine(timeout: startupTimeout, cancellation: cancellation)
             let ready = try JSONDecoder().decode(OCRWorkerReadyResponse.self, from: readyData)
             guard ready.ok, ready.event == "ready" else {
                 throw OptionalOCRPackError.invalidResponse
@@ -163,14 +222,28 @@ final class PersistentOCRWorker: @unchecked Sendable {
         }
         var data = try JSONEncoder().encode(value)
         data.append(0x0A)
-        do {
-            try inputHandle.write(contentsOf: data)
-        } catch {
-            throw OptionalOCRPackError.executionFailed("OCR Worker 写入失败：\(error.localizedDescription)")
+        // POSIX write so a closed pipe surfaces as an error code (EPIPE)
+        // rather than an Objective-C exception or a signal.
+        let descriptor = inputHandle.fileDescriptor
+        var offset = 0
+        while offset < data.count {
+            let written = data.withUnsafeBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return 0 }
+                return Darwin.write(descriptor, base + offset, buffer.count - offset)
+            }
+            if written < 0 {
+                if errno == EINTR { continue }
+                let reason = String(cString: strerror(errno))
+                throw OptionalOCRPackError.executionFailed("OCR Worker 写入失败：\(reason)")
+            }
+            if written == 0 {
+                throw OptionalOCRPackError.executionFailed("OCR Worker 写入失败")
+            }
+            offset += written
         }
     }
 
-    private func readLine(timeout: TimeInterval) throws -> Data {
+    private func readLine(timeout: TimeInterval, cancellation: OCRWorkerCancellation?) throws -> Data {
         guard let outputHandle else {
             throw OptionalOCRPackError.executionFailed("OCR Worker 输出管道不可用")
         }
@@ -185,10 +258,9 @@ final class PersistentOCRWorker: @unchecked Sendable {
             guard let process, process.isRunning else {
                 throw OptionalOCRPackError.executionFailed("OCR Worker 已退出")
             }
+            if cancellation?.isCancelled == true { throw CancellationError() }
             let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else {
-                throw OptionalOCRPackError.executionFailed("OCR Worker 响应超时")
-            }
+            guard remaining > 0 else { throw OCRWorkerTimeout() }
             var descriptor = pollfd(
                 fd: outputHandle.fileDescriptor,
                 events: Int16(POLLIN | POLLHUP | POLLERR),

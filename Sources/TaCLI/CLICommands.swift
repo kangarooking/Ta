@@ -97,6 +97,7 @@ struct CLIRunner: Sendable {
         do {
             return try await client.send(request)
         } catch let error as TaBridgeClientError where Self.isUnavailable(error) {
+            // Only a failed connect is retried: nothing was sent, so nothing can run twice.
             try await launcher.launch()
             return try await waitForBridge(client: client, request: request, timeout: invocation.timeout)
         }
@@ -113,10 +114,12 @@ struct CLIRunner: Sendable {
             try Task.checkCancellation()
             do {
                 return try await client.send(request)
-            } catch {
+            } catch let error as TaBridgeClientError where Self.isUnavailable(error) {
                 lastError = error
                 try await Task.sleep(for: .milliseconds(80))
             }
+            // Any other failure (timeout, closed connection) happened after the
+            // request may have been delivered: surface it instead of re-sending.
         }
         throw lastError
     }
@@ -130,14 +133,23 @@ struct CLIRunner: Sendable {
               !response.artifacts.isEmpty else { return response }
         let saveResponse = try await send(
             method: .deliverSave,
-            params: ["path": .string(outputPath)],
+            params: Self.saveParameters(
+                artifact: response.artifacts[0],
+                outputPath: outputPath,
+                overwrite: invocation.overwrite
+            ),
             invocation: invocation,
             requestIDSuffix: "save"
         )
         guard saveResponse.ok else { return saveResponse }
         var object: [String: JSONValue] = [:]
         if case .object(let existing) = response.data { object = existing }
-        object["savedPath"] = .string(outputPath)
+        // Report the path Ta actually wrote (it may have appended ".png").
+        var savedPath = outputPath
+        if case .object(let saved) = saveResponse.data, case .string(let path) = saved["path"] {
+            savedPath = path
+        }
+        object["savedPath"] = .string(savedPath)
         return AgentResponseEnvelope(
             requestID: response.requestID,
             ok: true,
@@ -145,6 +157,22 @@ struct CLIRunner: Sendable {
             artifacts: response.artifacts,
             meta: response.meta
         )
+    }
+
+    /// `--output` saves exactly the artifact this invocation produced. It must not
+    /// rely on Ta's process-wide "last image", which another client may have
+    /// replaced between the two requests.
+    static func saveParameters(
+        artifact: AgentArtifact,
+        outputPath: String,
+        overwrite: Bool
+    ) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
+            "path": .string(outputPath),
+            "inputPath": .string(artifact.path)
+        ]
+        if overwrite { params["overwrite"] = .bool(true) }
+        return params
     }
 
     private static func isUnavailable(_ error: TaBridgeClientError) -> Bool {

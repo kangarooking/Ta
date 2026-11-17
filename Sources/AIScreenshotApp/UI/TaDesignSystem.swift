@@ -17,6 +17,19 @@ enum TaPalette {
     static let hairline = ink.opacity(0.10)
 }
 
+extension View {
+    /// Ta's windows are drawn on a fixed light "paper" palette. Semantic
+    /// styles such as `.primary` / `.secondary` and system controls follow the
+    /// system appearance, which made text white-on-paper (invisible) in Dark
+    /// Mode. Every paper-backed root view pins itself to the light scheme so
+    /// text, form rows and controls always contrast with the background.
+    func taPaperAppearance() -> some View {
+        self
+            .environment(\.colorScheme, .light)
+            .preferredColorScheme(.light)
+    }
+}
+
 enum TaBrandAssets {
     static let appIcon: NSImage? = {
         guard let url = Bundle.main.url(

@@ -107,18 +107,47 @@ public struct OCRDocumentBlock: Equatable, Sendable {
 
 public struct OCRTable: Equatable, Sendable {
     public let rows: [[String]]
-    public init(rows: [[String]]) { self.rows = rows }
+    /// The recognised lines this table was built from. Empty when the table
+    /// came from an engine that only reports cell text; consumers then fall
+    /// back to matching cell text against the recognised lines.
+    public let sourceLines: [OCRTextLine]
 
-    public var markdown: String {
-        guard let first = rows.first, !first.isEmpty else { return "" }
-        let columnCount = first.count
-        let normalized = rows.map { row in row + Array(repeating: "", count: max(0, columnCount - row.count)) }
-        let header = "| " + normalized[0].prefix(columnCount).joined(separator: " | ") + " |"
-        let divider = "| " + Array(repeating: "---", count: columnCount).joined(separator: " | ") + " |"
-        return ([header, divider] + normalized.dropFirst().map { "| " + $0.prefix(columnCount).joined(separator: " | ") + " |" }).joined(separator: "\n")
+    public init(rows: [[String]], sourceLines: [OCRTextLine] = []) {
+        self.rows = rows
+        self.sourceLines = sourceLines
     }
 
-    public var tsv: String { rows.map { $0.joined(separator: "\t") }.joined(separator: "\n") }
+    public var columnCount: Int { rows.map(\.count).max() ?? 0 }
+
+    public var markdown: String {
+        let columnCount = self.columnCount
+        guard columnCount > 0 else { return "" }
+        let normalized = rows.map { row in
+            (row + Array(repeating: "", count: max(0, columnCount - row.count))).map(Self.markdownCell)
+        }
+        let header = "| " + normalized[0].joined(separator: " | ") + " |"
+        let divider = "| " + Array(repeating: "---", count: columnCount).joined(separator: " | ") + " |"
+        let body = normalized.dropFirst().map { "| " + $0.joined(separator: " | ") + " |" }
+        return ([header, divider] + body).joined(separator: "\n")
+    }
+
+    public var tsv: String {
+        rows.map { row in row.map(Self.tsvCell).joined(separator: "\t") }.joined(separator: "\n")
+    }
+
+    private static func markdownCell(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "|", with: "\\|")
+    }
+
+    private static func tsvCell(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+    }
 }
 
 public struct OCRDocumentLayout: Equatable, Sendable {
@@ -205,6 +234,9 @@ public struct OCRResult: Equatable, Sendable {
     public let document: OCRDocumentLayout
     public let barcodes: [DetectedBarcode]
     public let engine: OCREnginePreference
+    /// Same content as `text`, but with detected tables rendered as Markdown
+    /// tables instead of TSV. Equal to `text` when there is no table.
+    public let markdownText: String
 
     public init(
         text: String,
@@ -213,7 +245,8 @@ public struct OCRResult: Equatable, Sendable {
         languages: [String] = [],
         document: OCRDocumentLayout = OCRDocumentLayout(blocks: [], tables: []),
         barcodes: [DetectedBarcode] = [],
-        engine: OCREnginePreference = .appleVision
+        engine: OCREnginePreference = .appleVision,
+        markdownText: String? = nil
     ) {
         self.text = text
         self.contentType = contentType
@@ -222,7 +255,11 @@ public struct OCRResult: Equatable, Sendable {
         self.document = document
         self.barcodes = barcodes
         self.engine = engine
+        self.markdownText = markdownText ?? text
     }
+
+    /// True when `markdownText` offers a different (Markdown table) rendering.
+    public var hasMarkdownAlternative: Bool { markdownText != text }
 
     public var isLowConfidence: Bool {
         confidence < 0.72

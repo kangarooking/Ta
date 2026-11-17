@@ -27,18 +27,165 @@ enum PinnedImageLayout {
     }
 }
 
+/// Window sizing for pins. Every operation applies one uniform scale factor,
+/// so a pin can never be stretched out of its aspect ratio.
+enum PinnedImageZoom {
+    static let minimumSize = CGSize(width: 120, height: 60)
+    static let maximumSize = CGSize(width: 1200, height: 900)
+
+    /// Size after zooming `current` by `factor`. Zooming in stops once either
+    /// side would exceed `maximumSize`; zooming out stops once either side
+    /// would drop below `minimumSize`. A pin that already lies outside those
+    /// limits is never forced back, it just cannot move further away.
+    static func scaledSize(current: CGSize, factor: CGFloat) -> CGSize {
+        guard current.width > 0, current.height > 0, factor.isFinite, factor > 0 else {
+            return current
+        }
+        let largestScale = min(maximumSize.width / current.width, maximumSize.height / current.height)
+        let smallestScale = max(minimumSize.width / current.width, minimumSize.height / current.height)
+        let upperBound = max(1, largestScale)
+        let lowerBound = min(1, smallestScale)
+        let scale = min(upperBound, max(lowerBound, factor))
+        return CGSize(width: current.width * scale, height: current.height * scale)
+    }
+
+    /// Largest size with the aspect ratio of `content` that fits in `box`.
+    static func aspectFit(_ content: CGSize, into box: CGSize) -> CGSize {
+        guard content.width > 0, content.height > 0, box.width > 0, box.height > 0 else {
+            return box
+        }
+        let scale = min(box.width / content.width, box.height / content.height)
+        return CGSize(width: content.width * scale, height: content.height * scale)
+    }
+
+    /// Keeps `width` when possible and derives the height from the content's
+    /// aspect ratio, shrinking uniformly if that would exceed `maximumSize`.
+    static func size(forContent content: CGSize, preferredWidth: CGFloat) -> CGSize {
+        guard content.width > 0, content.height > 0, preferredWidth > 0 else {
+            return CGSize(width: max(1, preferredWidth), height: max(1, preferredWidth))
+        }
+        let proposed = CGSize(
+            width: preferredWidth,
+            height: preferredWidth * content.height / content.width
+        )
+        let scale = min(1, maximumSize.width / proposed.width, maximumSize.height / proposed.height)
+        return CGSize(width: proposed.width * scale, height: proposed.height * scale)
+    }
+}
+
+/// Rotation / mirroring of a pin, shared by on-screen drawing, "复制图片" and
+/// crop mapping so that all three agree.
+enum PinnedImageTransform {
+    static func normalizedQuarterTurns(_ turns: Int) -> Int {
+        ((turns % 4) + 4) % 4
+    }
+
+    static func isSideways(_ turns: Int) -> Bool {
+        !normalizedQuarterTurns(turns).isMultiple(of: 2)
+    }
+
+    /// Pixel size of `size` once rotated by `turns` quarter turns.
+    static func displayedSize(for size: CGSize, quarterTurns: Int) -> CGSize {
+        isSideways(quarterTurns) ? CGSize(width: size.height, height: size.width) : size
+    }
+
+    /// Renders `image` exactly as the pin shows it (same transform order as
+    /// `PinnedImageView.draw`): mirror first, then rotate counter-clockwise by
+    /// `quarterTurns` × 90° in a y-up coordinate space.
+    static func apply(
+        to image: CGImage,
+        quarterTurns: Int,
+        mirroredHorizontally: Bool,
+        mirroredVertically: Bool
+    ) -> CGImage? {
+        let turns = normalizedQuarterTurns(quarterTurns)
+        guard turns != 0 || mirroredHorizontally || mirroredVertically else { return image }
+        let source = CGSize(width: image.width, height: image.height)
+        let output = displayedSize(for: source, quarterTurns: turns)
+        guard let context = CGContext(
+            data: nil,
+            width: Int(output.width),
+            height: Int(output.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        context.interpolationQuality = .high
+        context.translateBy(x: output.width / 2, y: output.height / 2)
+        context.rotate(by: CGFloat(turns) * .pi / 2)
+        context.scaleBy(x: mirroredHorizontally ? -1 : 1, y: mirroredVertically ? -1 : 1)
+        context.draw(
+            image,
+            in: CGRect(
+                x: -source.width / 2,
+                y: -source.height / 2,
+                width: source.width,
+                height: source.height
+            )
+        )
+        return context.makeImage()
+    }
+
+    /// Maps a rectangle in the pin view (AppKit coordinates, origin bottom-
+    /// left) to the matching region of the *untransformed* image, expressed
+    /// in unit coordinates with the origin at the image's top-left corner
+    /// (the convention of `CGImage.cropping(to:)`).
+    static func imageUnitRect(
+        forViewRect rect: CGRect,
+        viewSize: CGSize,
+        quarterTurns: Int,
+        mirroredHorizontally: Bool,
+        mirroredVertically: Bool
+    ) -> CGRect {
+        guard viewSize.width > 0, viewSize.height > 0 else { return .zero }
+        let turns = normalizedQuarterTurns(quarterTurns)
+        let cosine: CGFloat = [1, 0, -1, 0][turns]
+        let sine: CGFloat = [0, 1, 0, -1][turns]
+        // The image is drawn into this size before rotation.
+        let drawSize = displayedSize(for: viewSize, quarterTurns: turns)
+
+        func unitPoint(_ point: CGPoint) -> CGPoint {
+            let dx = point.x - viewSize.width / 2
+            let dy = point.y - viewSize.height / 2
+            // Undo the rotation, then the mirroring.
+            var localX = dx * cosine + dy * sine
+            var localY = -dx * sine + dy * cosine
+            if mirroredHorizontally { localX = -localX }
+            if mirroredVertically { localY = -localY }
+            let unitX = localX / drawSize.width + 0.5
+            let unitYFromBottom = localY / drawSize.height + 0.5
+            return CGPoint(x: unitX, y: 1 - unitYFromBottom)
+        }
+
+        let first = unitPoint(CGPoint(x: rect.minX, y: rect.minY))
+        let second = unitPoint(CGPoint(x: rect.maxX, y: rect.maxY))
+        let mapped = CGRect(
+            x: min(first.x, second.x),
+            y: min(first.y, second.y),
+            width: abs(first.x - second.x),
+            height: abs(first.y - second.y)
+        )
+        return mapped.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+}
+
 @MainActor
 final class PinnedImageWindowController {
     private struct PinRecord {
         let id: UUID
         let panel: NSPanel
         let sourceImage: CGImage
+        let pixelScale: CGFloat
         var groupID: UUID?
     }
 
     private struct ClosedPin {
         let image: CGImage
         let frame: CGRect
+        let pixelScale: CGFloat
     }
 
     private var records: [PinRecord] = []
@@ -49,7 +196,8 @@ final class PinnedImageWindowController {
             image,
             near: selection,
             preferredFrame: nil,
-            preferredLogicalSize: selection.globalRect.size
+            preferredLogicalSize: selection.globalRect.size,
+            pixelScale: selection.backingScaleFactor
         )
     }
 
@@ -112,7 +260,8 @@ final class PinnedImageWindowController {
             closed.image,
             near: selectionAtMouse(),
             preferredFrame: closed.frame,
-            preferredLogicalSize: nil
+            preferredLogicalSize: nil,
+            pixelScale: closed.pixelScale
         )
         return true
     }
@@ -122,7 +271,8 @@ final class PinnedImageWindowController {
             image,
             near: selectionAtMouse(),
             preferredFrame: nil,
-            preferredLogicalSize: nil
+            preferredLogicalSize: nil,
+            pixelScale: 1
         )
     }
 
@@ -131,7 +281,8 @@ final class PinnedImageWindowController {
         _ image: CGImage,
         near selection: CaptureSelection,
         preferredFrame: CGRect?,
-        preferredLogicalSize: CGSize?
+        preferredLogicalSize: CGSize?,
+        pixelScale: CGFloat
     ) -> NSPanel {
         let imageSize = CGSize(width: image.width, height: image.height)
         let visibleFrame = NSScreen.screens
@@ -164,17 +315,23 @@ final class PinnedImageWindowController {
 
         let contentView = PinnedImageView(image: image)
         contentView.onCopy = { copiedImage in
+            guard let payload = ClipboardImageEncoder.payload(for: copiedImage, scale: pixelScale) else {
+                return
+            }
             let pasteboard = NSPasteboard.general
-            let representation = NSBitmapImageRep(cgImage: copiedImage)
-            guard let png = representation.representation(using: .png, properties: [:]) else { return }
             pasteboard.clearContents()
-            pasteboard.setData(png, forType: .png)
+            pasteboard.setData(payload.png, forType: .png)
+            if let tiff = payload.tiff {
+                pasteboard.setData(tiff, forType: .tiff)
+            }
         }
         let id = UUID()
         contentView.onClose = { [weak self, weak panel] in
             guard let self, let panel,
                   let record = records.first(where: { $0.id == id }) else { return }
-            closedPins.append(ClosedPin(image: record.sourceImage, frame: panel.frame))
+            closedPins.append(
+                ClosedPin(image: record.sourceImage, frame: panel.frame, pixelScale: record.pixelScale)
+            )
             if closedPins.count > 3 { closedPins.removeFirst() }
             panel.orderOut(nil)
             records.removeAll { $0.id == id }
@@ -184,7 +341,9 @@ final class PinnedImageWindowController {
         contentView.onHideGroup = { [weak self] in self?.hideGroup(containing: id) }
         panel.contentView = contentView
         panel.orderFrontRegardless()
-        records.append(PinRecord(id: id, panel: panel, sourceImage: image, groupID: nil))
+        records.append(
+            PinRecord(id: id, panel: panel, sourceImage: image, pixelScale: pixelScale, groupID: nil)
+        )
         return panel
     }
 
@@ -383,10 +542,16 @@ private final class PinnedImageView: NSView {
         )
         context.restoreGraphicsState()
         if isCropping, let start = cropDragStart, let current = cropDragCurrent {
-            NSColor.black.withAlphaComponent(0.45).setFill()
-            bounds.fill()
             let rect = normalizedRect(start, current).intersection(bounds)
-            displayedImage.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 0.35)
+            // Dim everything except the selection; the picture underneath is
+            // already drawn with the current rotation / mirroring.
+            NSColor.black.withAlphaComponent(0.45).setFill()
+            let dimming = NSBezierPath(rect: bounds)
+            if !rect.isNull, rect.width > 0, rect.height > 0 {
+                dimming.append(NSBezierPath(rect: rect))
+                dimming.windingRule = .evenOdd
+            }
+            dimming.fill()
             NSColor.controlAccentColor.setStroke()
             let border = NSBezierPath(rect: rect)
             let pattern: [CGFloat] = [6, 4]
@@ -436,11 +601,20 @@ private final class PinnedImageView: NSView {
         }
         guard selected.width >= 12, selected.height >= 12 else { return }
         let current = cropRect ?? CGRect(x: 0, y: 0, width: sourceCGImage.width, height: sourceCGImage.height)
+        // The selection is made on the rotated / mirrored picture; map it back
+        // to the untransformed image before cropping.
+        let unit = PinnedImageTransform.imageUnitRect(
+            forViewRect: selected,
+            viewSize: bounds.size,
+            quarterTurns: rotationQuarterTurns,
+            mirroredHorizontally: isMirroredHorizontally,
+            mirroredVertically: isMirroredVertically
+        )
         let newCrop = CGRect(
-            x: current.minX + selected.minX / bounds.width * current.width,
-            y: current.minY + (1 - selected.maxY / bounds.height) * current.height,
-            width: selected.width / bounds.width * current.width,
-            height: selected.height / bounds.height * current.height
+            x: current.minX + unit.minX * current.width,
+            y: current.minY + unit.minY * current.height,
+            width: unit.width * current.width,
+            height: unit.height * current.height
         ).integral.intersection(CGRect(x: 0, y: 0, width: sourceCGImage.width, height: sourceCGImage.height))
         guard newCrop.width >= 2, newCrop.height >= 2 else { return }
         cropRect = newCrop
@@ -456,17 +630,17 @@ private final class PinnedImageView: NSView {
 
         let factor = event.scrollingDeltaY >= 0 ? 1.06 : 0.94
         var frame = window.frame
-        let newWidth = min(1200, max(120, frame.width * factor))
-        let newHeight = min(900, max(60, frame.height * (newWidth / frame.width)))
-        frame.origin.x -= (newWidth - frame.width) / 2
-        frame.origin.y -= (newHeight - frame.height) / 2
-        frame.size = CGSize(width: newWidth, height: newHeight)
+        // One scale factor for both axes: the aspect ratio never changes.
+        let newSize = PinnedImageZoom.scaledSize(current: frame.size, factor: factor)
+        frame.origin.x -= (newSize.width - frame.width) / 2
+        frame.origin.y -= (newSize.height - frame.height) / 2
+        frame.size = newSize
         window.setFrame(frame, display: true)
     }
 
     @objc
     private func copyImage() {
-        onCopy?(currentCGImage)
+        onCopy?(renderedCGImage)
     }
 
     @objc private func beginCrop() {
@@ -578,10 +752,9 @@ private final class PinnedImageView: NSView {
             sender.state = .off
         } else {
             thumbnailPreviousFrame = window.frame
-            let aspect = CGFloat(currentCGImage.height) / CGFloat(currentCGImage.width)
             var frame = window.frame
             let center = CGPoint(x: frame.midX, y: frame.midY)
-            frame.size = CGSize(width: 160, height: min(220, max(72, 160 * aspect)))
+            frame.size = PinnedImageZoom.aspectFit(displayedPixelSize, into: CGSize(width: 160, height: 220))
             frame.origin = CGPoint(x: center.x - frame.width / 2, y: center.y - frame.height / 2)
             window.setFrame(frame, display: true, animate: true)
             sender.state = .on
@@ -593,14 +766,7 @@ private final class PinnedImageView: NSView {
     @objc private func hideGroup() { onHideGroup?() }
 
     private var displayedImage: NSImage {
-        switch filteredMode {
-        case .none:
-            NSImage(cgImage: currentCGImage, size: image.size)
-        case .grayscale:
-            filteredImage(filterName: "CIPhotoEffectMono") ?? image
-        case .inverted:
-            filteredImage(filterName: "CIColorInvert") ?? image
-        }
+        NSImage(cgImage: filteredCGImage, size: image.size)
     }
 
     private var currentCGImage: CGImage {
@@ -608,21 +774,50 @@ private final class PinnedImageView: NSView {
         return cropped
     }
 
-    private func filteredImage(filterName: String) -> NSImage? {
+    /// Cropped image with the display filter applied (not yet rotated).
+    private var filteredCGImage: CGImage {
+        switch filteredMode {
+        case .none:
+            currentCGImage
+        case .grayscale:
+            filteredImage(filterName: "CIPhotoEffectMono") ?? currentCGImage
+        case .inverted:
+            filteredImage(filterName: "CIColorInvert") ?? currentCGImage
+        }
+    }
+
+    /// Exactly what the pin shows: crop, filter, rotation and mirroring.
+    private var renderedCGImage: CGImage {
+        let filtered = filteredCGImage
+        return PinnedImageTransform.apply(
+            to: filtered,
+            quarterTurns: rotationQuarterTurns,
+            mirroredHorizontally: isMirroredHorizontally,
+            mirroredVertically: isMirroredVertically
+        ) ?? filtered
+    }
+
+    /// Pixel size of the picture as displayed (after crop and rotation).
+    private var displayedPixelSize: CGSize {
+        PinnedImageTransform.displayedSize(
+            for: CGSize(width: currentCGImage.width, height: currentCGImage.height),
+            quarterTurns: rotationQuarterTurns
+        )
+    }
+
+    private func filteredImage(filterName: String) -> CGImage? {
         let input = CIImage(cgImage: currentCGImage)
         guard let filter = CIFilter(name: filterName) else { return nil }
         filter.setValue(input, forKey: kCIInputImageKey)
-        guard let output = filter.outputImage,
-              let cgImage = CIContext().createCGImage(output, from: input.extent) else { return nil }
-        return NSImage(cgImage: cgImage, size: image.size)
+        guard let output = filter.outputImage else { return nil }
+        return CIContext().createCGImage(output, from: input.extent)
     }
 
     private func resizeWindowForCurrentAspect() {
         guard let window else { return }
         var frame = window.frame
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        let aspect = CGFloat(currentCGImage.height) / CGFloat(currentCGImage.width)
-        frame.size.height = min(900, max(60, frame.width * aspect))
+        frame.size = PinnedImageZoom.size(forContent: displayedPixelSize, preferredWidth: frame.width)
         frame.origin = CGPoint(x: center.x - frame.width / 2, y: center.y - frame.height / 2)
         window.setFrame(frame, display: true, animate: true)
     }

@@ -66,7 +66,115 @@ enum FrozenDisplayCropper {
     }
 }
 
+/// Ta's own transient chrome (result toast, long-capture HUD, …) must never be
+/// baked into a screenshot. Windows registered here are excluded from every
+/// display capture. Pinned images are deliberately *not* registered: users
+/// expect to be able to capture them.
+final class CaptureExclusionRegistry: @unchecked Sendable {
+    static let shared = CaptureExclusionRegistry()
+
+    private let lock = NSLock()
+    private var identifiers = Set<CGWindowID>()
+
+    @MainActor
+    func register(_ window: NSWindow) {
+        let number = window.windowNumber
+        guard number > 0 else { return }
+        lock.lock()
+        identifiers.insert(CGWindowID(number))
+        lock.unlock()
+    }
+
+    @MainActor
+    func unregister(_ window: NSWindow) {
+        let number = window.windowNumber
+        guard number > 0 else { return }
+        lock.lock()
+        identifiers.remove(CGWindowID(number))
+        lock.unlock()
+    }
+
+    var windowIDs: Set<CGWindowID> {
+        lock.lock()
+        defer { lock.unlock() }
+        return identifiers
+    }
+}
+
+/// Captures the same display region repeatedly without re-enumerating
+/// shareable content for every frame, which is what made dense long-capture
+/// sampling too slow to follow a manual scroll.
+final class ScrollingRegionCapturer: @unchecked Sendable {
+    private let filter: SCContentFilter
+    private let configuration: SCStreamConfiguration
+    private let excludedSnapshot: Set<CGWindowID>
+
+    init(
+        filter: SCContentFilter,
+        configuration: SCStreamConfiguration,
+        excludedSnapshot: Set<CGWindowID>
+    ) {
+        self.filter = filter
+        self.configuration = configuration
+        self.excludedSnapshot = excludedSnapshot
+    }
+
+    /// True when Ta opened or closed one of its own overlay windows since the
+    /// filter was built; the caller should build a new capturer.
+    var isStale: Bool {
+        CaptureExclusionRegistry.shared.windowIDs != excludedSnapshot
+    }
+
+    func capture() async throws -> CGImage {
+        try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+    }
+}
+
 struct ScreenCaptureService: Sendable {
+    func makeRegionCapturer(
+        for selection: CaptureSelection,
+        pixelScale: CGFloat? = nil
+    ) async throws -> ScrollingRegionCapturer {
+        let screenFrame = selection.screenFrame
+        let clipped = selection.globalRect.intersection(screenFrame)
+        guard clipped.width >= 1, clipped.height >= 1 else {
+            throw ScreenCaptureError.invalidSelection
+        }
+        let localRect = CGRect(
+            x: clipped.minX - screenFrame.minX,
+            y: screenFrame.maxY - clipped.maxY,
+            width: clipped.width,
+            height: clipped.height
+        )
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        guard let display = content.displays.first(where: { $0.displayID == selection.displayID })
+        else {
+            throw ScreenCaptureError.displayUnavailable
+        }
+        let registered = CaptureExclusionRegistry.shared.windowIDs
+        let excludedIDs = Set(selection.excludedWindowIDs).union(registered)
+        let excludedWindows = content.windows.filter { excludedIDs.contains($0.windowID) }
+        let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
+        let configuration = Self.configuration(
+            size: localRect.size,
+            sourceRect: localRect,
+            pixelScale: pixelScale ?? selection.backingScaleFactor,
+            showsCursor: false,
+            ignoreWindowShadows: true
+        )
+        return ScrollingRegionCapturer(
+            filter: filter,
+            configuration: configuration,
+            excludedSnapshot: registered
+        )
+    }
+
     func capture(_ selection: CaptureSelection) async throws -> CGImage {
         if let frozenDisplayImage = selection.frozenDisplayImage {
             return try FrozenDisplayCropper.crop(frozenDisplayImage, to: selection)
@@ -110,6 +218,7 @@ struct ScreenCaptureService: Sendable {
             throw ScreenCaptureError.displayUnavailable
         }
         let excludedIDs = Set(excludedWindowIDs)
+            .union(CaptureExclusionRegistry.shared.windowIDs)
         let excludedWindows = content.windows.filter { excludedIDs.contains($0.windowID) }
         let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
         let captureRect = sourceRect ?? CGRect(origin: .zero, size: display.frame.size)

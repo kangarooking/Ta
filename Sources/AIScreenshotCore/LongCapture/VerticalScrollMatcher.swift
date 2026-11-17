@@ -86,7 +86,7 @@ public struct VerticalScrollMatcher: Sendable {
         maximumShiftFraction: Double = 0.82,
         ignoredTopFraction: Double = 0.10,
         ignoredBottomFraction: Double = 0.22,
-        ignoredSideFraction: Double = 0.28,
+        ignoredSideFraction: Double = 0.16,
         maximumMeanAbsoluteDifference: Double = 18,
         minimumConfidence: Double = 0.56,
         sampleStride: Int = 2
@@ -106,7 +106,8 @@ public struct VerticalScrollMatcher: Sendable {
         constraint: VerticalScrollConstraint = .any,
         preferredSignedShift: Int? = nil,
         allowsAmbiguousMatch: Bool = false,
-        minimumAcceptedConfidence: Double? = nil
+        minimumAcceptedConfidence: Double? = nil,
+        searchWindow: ClosedRange<Int>? = nil
     ) -> VerticalScrollMatch? {
         guard previous.width == current.width,
               previous.height == current.height,
@@ -151,6 +152,10 @@ public struct VerticalScrollMatcher: Sendable {
             shiftRange = (-maximumShift)...0
         }
         var candidateShifts = Array(shiftRange)
+        if let searchWindow {
+            candidateShifts = candidateShifts.filter { searchWindow.contains($0) }
+            guard !candidateShifts.isEmpty else { return nil }
+        }
         if let preferredSignedShift {
             candidateShifts.sort {
                 let lhsDistance = abs($0 - preferredSignedShift)

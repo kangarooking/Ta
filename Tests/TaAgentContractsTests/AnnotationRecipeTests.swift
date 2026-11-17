@@ -87,6 +87,34 @@ struct AnnotationRecipeTests {
         }
     }
 
+    @Test("rejects absurdly large sizes that would overflow renderer integer conversions")
+    func rejectsOversizedValues() throws {
+        let rect = AnnotationRect(x: 0, y: 0, width: 10, height: 10)
+        let operations: [AnnotationOperation] = [
+            .blur(.init(id: "blur", rect: rect, radius: 1e30)),
+            .mosaic(.init(id: "mosaic", mode: .rect, rect: rect, scale: 1e30)),
+            .mosaic(.init(id: "brush", mode: .brush, points: [.init(x: 1, y: 1)], lineWidth: 1e30)),
+            .rectangle(.init(id: "rect", rect: rect, lineWidth: 1e30)),
+            .rectangle(.init(id: "huge", rect: .init(x: 0, y: 0, width: 1e30, height: 10))),
+            .text(.init(id: "text", origin: .init(x: 0, y: 0), text: "a", fontSize: 1e30)),
+            .number(.init(id: "number", center: .init(x: 0, y: 0), number: 1, diameter: 1e30)),
+            .magnify(.init(id: "magnify", rect: rect, factor: 1e30)),
+            .pen(.init(id: "pen", points: [.init(x: 1e30, y: 0)])),
+            .blur(.init(id: "inf", rect: rect, radius: .infinity))
+        ]
+
+        for operation in operations {
+            #expect(throws: AnnotationRecipeValidationError.self) {
+                _ = try AnnotationRecipe(version: 1, operations: [operation]).validated()
+            }
+        }
+        // Values at the documented limits stay valid.
+        _ = try AnnotationRecipe(version: 1, operations: [
+            .blur(.init(id: "blur", rect: rect, radius: AnnotationRecipeLimits.maximumBlurRadius)),
+            .mosaic(.init(id: "mosaic", mode: .rect, rect: rect, scale: AnnotationRecipeLimits.maximumMosaicScale))
+        ]).validated()
+    }
+
     @Test("eraser resolves IDs from the existing session and current recipe")
     func eraserUsesStableIDs() throws {
         let recipe = AnnotationRecipe(version: 1, operations: [

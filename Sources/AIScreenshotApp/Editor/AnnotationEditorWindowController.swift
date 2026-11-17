@@ -22,10 +22,18 @@ enum AnnotationEditorToolbarMetrics {
 @MainActor
 final class AnnotationEditorWindowController: NSObject, NSWindowDelegate {
     private var windows: [NSWindow] = []
+    private var canvases: [ObjectIdentifier: AnnotationCanvasView] = [:]
     private let exportService = ImageExportService()
 
-    func open(image: CGImage) {
+    /// Called after "完成" / Return copied the annotated image to the
+    /// clipboard, right before the editor window closes.
+    var onDelivered: ((CGImage) -> Void)?
+
+    /// - Parameter scale: backing scale of the display the image was captured
+    ///   from; used for the DPI metadata of copied images.
+    func open(image: CGImage, scale: CGFloat? = nil) {
         let canvas = AnnotationCanvasView(image: image)
+        canvas.exportScale = scale
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760),
             styleMask: AnnotationEditorWindowLayout.styleMask,
@@ -43,11 +51,41 @@ final class AnnotationEditorWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         windows.append(window)
+        canvases[ObjectIdentifier(window)] = canvas
+        // Return on the canvas behaves like the "完成" button.
+        canvas.onCommit = { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.deliverAndClose(window)
+        }
+    }
+
+    /// "完成": like the inline flow, hand the annotated image to the
+    /// clipboard instead of silently discarding the annotations.
+    private func deliverAndClose(_ window: NSWindow) {
+        guard let canvas = canvases[ObjectIdentifier(window)] else {
+            window.performClose(nil)
+            return
+        }
+        guard let image = canvas.copyRenderedImageToPasteboard() else {
+            // Keep the window (and the annotations) when the copy failed.
+            NSSound.beep()
+            return
+        }
+        onDelivered?(image)
+        window.performClose(nil)
+    }
+
+    @objc
+    private func finishEditing(_ sender: NSButton) {
+        guard let window = sender.window else { return }
+        deliverAndClose(window)
     }
 
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
         closingWindow.undoManager?.removeAllActions()
+        canvases[ObjectIdentifier(closingWindow)]?.onCommit = nil
+        canvases.removeValue(forKey: ObjectIdentifier(closingWindow))
         windows.removeAll { $0 === closingWindow }
     }
 
@@ -118,7 +156,9 @@ final class AnnotationEditorWindowController: NSObject, NSWindowDelegate {
         let save = toolbarActionButton(title: "保存", symbol: "square.and.arrow.down", target: self, action: #selector(saveEditorImage(_:)))
         save.identifier = NSUserInterfaceItemIdentifier("saveEditorImage")
 
-        let done = NSButton(title: "完成", target: window, action: #selector(NSWindow.performClose(_:)))
+        let done = NSButton(title: "完成", target: self, action: #selector(finishEditing(_:)))
+        done.toolTip = "完成并复制标注后的图片"
+        done.identifier = NSUserInterfaceItemIdentifier("finishEditorImage")
         done.bezelStyle = .rounded
         done.bezelColor = NSColor(
             calibratedRed: 214 / 255,
@@ -419,6 +459,15 @@ struct AnnotationTextMetrics {
         min(availableSizes.last ?? 72, max(availableSizes.first ?? 12, size))
     }
 
+    /// Size at which an annotation of image-space `size` is drawn when the
+    /// image is shown at `scale`. Export uses `scale == 1`. There is
+    /// deliberately no on-screen minimum: a floor that only applied on screen
+    /// made text and number badges look larger in the editor than in the
+    /// exported image.
+    static func renderedSize(for size: CGFloat, scale: CGFloat) -> CGFloat {
+        max(1, size * scale)
+    }
+
     static func stepped(from size: CGFloat, direction: Int) -> CGFloat {
         let current = clamped(size)
         if direction > 0 {
@@ -527,6 +576,15 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     var onElementsChanged: ((Bool) -> Void)?
     var onWidthChanged: ((CGFloat) -> Void)?
     var onTextSizeChanged: ((CGFloat) -> Void)?
+    /// Backing scale of the captured display, for DPI metadata on copy.
+    var exportScale: CGFloat?
+
+    /// Read-only state for tests.
+    var elementCount: Int { elements.count }
+    var undoDepth: Int { undoSnapshots.count }
+    var redoDepth: Int { redoSnapshots.count }
+    var hasSelection: Bool { selectedElementIndex != nil }
+    var isManipulatingElement: Bool { directManipulationMode != nil }
 
     private let sourceCGImage: CGImage
     private let sourceImage: NSImage
@@ -546,6 +604,8 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private var selectedElementIndex: Int?
     private var selectedElementBeforeDrag: AnnotationElement?
     private var directManipulationMode: DirectManipulationMode?
+    private var snapshotBeforeManipulation: AnnotationSnapshot?
+    private var didManipulateElement = false
     private var dragStart: CGPoint?
     private var dragCurrent: CGPoint?
     private var penPoints: [CGPoint] = []
@@ -676,7 +736,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         let point = imagePoint(from: viewPoint)
 
         if selectedTool == .eraser {
-            if let index = hitTestElement(at: point) {
+            if let index = hitTestElement(at: point, allowsInterior: false) {
                 registerUndo()
                 elements.remove(at: index)
                 selectedElementIndex = nil
@@ -701,7 +761,11 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             return
         }
 
-        if let index = hitTestElement(at: point) {
+        // The select tool grabs anything under the pointer, including the
+        // interior of hollow shapes. With a drawing tool only the element's
+        // actual stroke (or filled body) grabs it; otherwise the tool draws,
+        // so you can annotate inside an existing rectangle or ellipse.
+        if let index = hitTestElement(at: point, allowsInterior: selectedTool == .select) {
             selectedElementIndex = index
             if event.clickCount >= 2 {
                 editElement(at: index)
@@ -750,6 +814,12 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
            elements.indices.contains(index),
            let original = selectedElementBeforeDrag,
            let start = dragStart {
+            // Ignore pointer jitter during a plain click so that selecting an
+            // element neither nudges it nor creates an undo step.
+            let viewScale = imageFrame.width / max(1, visibleImageRect.width)
+            let travelled = hypot(point.x - start.x, point.y - start.y) * viewScale
+            guard didManipulateElement || travelled >= 2 else { return }
+            didManipulateElement = true
             switch mode {
             case .move:
                 elements[index] = translated(original, dx: point.x - start.x, dy: point.y - start.y)
@@ -777,29 +847,31 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         guard let start = dragStart else { return }
         let end = imagePoint(from: convert(event.locationInWindow, from: nil))
         if directManipulationMode != nil {
-            dragStart = nil
-            dragCurrent = nil
-            selectedElementBeforeDrag = nil
-            directManipulationMode = nil
+            // Record undo only when the element really moved or resized.
+            if didManipulateElement, let snapshot = snapshotBeforeManipulation {
+                registerUndo(snapshot)
+                notifyElementsChanged()
+            }
+            endDirectManipulation()
             needsDisplay = true
             return
         }
         let rect = normalizedRect(from: start, to: end)
         let element: AnnotationElement?
         switch selectedTool {
-        case .rectangle where rect.width >= 2 && rect.height >= 2:
+        case .rectangle where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 2):
             element = .rectangle(rect, effectiveColor, selectedWidth, selectedDashed)
-        case .ellipse where rect.width >= 2 && rect.height >= 2:
+        case .ellipse where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 2):
             element = .ellipse(rect, effectiveColor, selectedWidth, selectedDashed)
-        case .arrow:
+        case .arrow where AnnotationDragValidity.isDrawableArrow(from: start, to: end):
             element = .arrow(start, end, effectiveColor, selectedWidth, selectedDashed)
-        case .pen where penPoints.count > 1:
+        case .pen where AnnotationDragValidity.isDrawableStroke(penPoints + [end]):
             penPoints.append(end)
             element = .pen(penPoints, effectiveColor, selectedWidth, selectedDashed)
-        case .highlighter where penPoints.count > 1:
+        case .highlighter where AnnotationDragValidity.isDrawableStroke(penPoints + [end]):
             penPoints.append(end)
             element = .highlighter(penPoints, selectedColor.withAlphaComponent(min(0.45, selectedOpacity)), selectedWidth * 4)
-        case .mosaic where rect.width >= 3 && rect.height >= 3:
+        case .mosaic where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 3):
             element = .mosaic(rect)
         case .mosaicBrush where !penPoints.isEmpty:
             if let previous = penPoints.last {
@@ -810,11 +882,11 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
                 ))
             }
             element = .mosaicStroke(penPoints, mosaicBrushDiameter)
-        case .blur where rect.width >= 3 && rect.height >= 3:
+        case .blur where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 3):
             element = .blur(rect)
-        case .magnify where rect.width >= 12 && rect.height >= 12:
+        case .magnify where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 12):
             element = .magnify(rect, 2)
-        case .crop where rect.width >= 12 && rect.height >= 12:
+        case .crop where AnnotationDragValidity.isDrawableRect(rect, minimumSide: 12):
             registerUndo()
             cropRect = rect.intersection(visibleImageRect)
             element = nil
@@ -872,11 +944,15 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             return
         }
         if dragStart != nil {
-            dragStart = nil
-            dragCurrent = nil
+            // Cancelling a move/resize puts the element back where it was.
+            if directManipulationMode != nil,
+               let index = selectedElementIndex,
+               elements.indices.contains(index),
+               let original = selectedElementBeforeDrag {
+                elements[index] = original
+            }
             penPoints = []
-            selectedElementBeforeDrag = nil
-            directManipulationMode = nil
+            endDirectManipulation()
             needsDisplay = true
             return
         }
@@ -959,11 +1035,27 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     }
 
     @objc func copyRenderedImage() {
+        _ = copyRenderedImageToPasteboard()
+    }
+
+    /// Copies the annotated image (with scale-aware DPI metadata) and returns
+    /// it, or `nil` when it could not be encoded or written.
+    @discardableResult
+    func copyRenderedImageToPasteboard() -> CGImage? {
         let image = renderedImage()
-        let representation = NSBitmapImageRep(cgImage: image)
-        guard let data = representation.representation(using: .png, properties: [:]) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setData(data, forType: .png)
+        guard let payload = ClipboardImageEncoder.payload(
+            for: image,
+            scale: exportScale ?? ClipboardService.defaultImageScale
+        ) else {
+            return nil
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setData(payload.png, forType: .png) else { return nil }
+        if let tiff = payload.tiff {
+            pasteboard.setData(tiff, forType: .tiff)
+        }
+        return image
     }
 
     func renderedImage() -> CGImage {
@@ -1091,8 +1183,9 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private func updateTextEditorFontAndFrame() {
         guard let textView = activeTextView, let origin = activeTextOrigin else { return }
         let scale = imageFrame.width / visibleImageRect.width
+        // Same effective size as the committed element (and the export).
         let font = NSFont.systemFont(
-            ofSize: max(11, (activeTextSize ?? selectedTextSize) * scale),
+            ofSize: AnnotationTextMetrics.renderedSize(for: activeTextSize ?? selectedTextSize, scale: scale),
             weight: .regular
         )
         textView.font = font
@@ -1213,7 +1306,11 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     }
 
     private func registerUndo() {
-        undoSnapshots.append(currentSnapshot)
+        registerUndo(currentSnapshot)
+    }
+
+    private func registerUndo(_ snapshot: AnnotationSnapshot) {
+        undoSnapshots.append(snapshot)
         if undoSnapshots.count > 100 { undoSnapshots.removeFirst() }
         redoSnapshots.removeAll()
     }
@@ -1222,7 +1319,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         elements = snapshot.elements
         cropRect = snapshot.cropRect
         selectedElementIndex = nil
-        selectedElementBeforeDrag = nil
+        endDirectManipulation()
         notifyElementsChanged()
     }
 
@@ -1288,7 +1385,10 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             path.stroke()
         case .text(let text, let origin, let color, let size):
             let mappedOrigin = map(origin)
-            let font = NSFont.systemFont(ofSize: max(11, size * strokeScale), weight: .regular)
+            let font = NSFont.systemFont(
+                ofSize: AnnotationTextMetrics.renderedSize(for: size, scale: strokeScale),
+                weight: .regular
+            )
             let maximumWidth = max(font.pointSize * 2, destination.maxX - mappedOrigin.x)
             let textSize = AnnotationTextMetrics.boundingSize(for: text, font: font, maximumWidth: maximumWidth)
             let textRect = CGRect(
@@ -1304,7 +1404,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             )
         case .number(let number, let center, let color, let size):
             let mappedCenter = map(center)
-            let diameter = max(18, size * strokeScale)
+            let diameter = AnnotationTextMetrics.renderedSize(for: size, scale: strokeScale)
             let circle = CGRect(x: mappedCenter.x - diameter / 2, y: mappedCenter.y - diameter / 2, width: diameter, height: diameter)
             color.setFill()
             NSBezierPath(ovalIn: circle).fill()
@@ -1365,24 +1465,90 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         }
     }
 
-    private func hitTestElement(at point: CGPoint) -> Int? {
+    /// Hit tolerance in image coordinates, equal to ~6 points on screen.
+    private var hitTolerance: CGFloat {
+        let viewScale = imageFrame.width / max(1, visibleImageRect.width)
+        guard viewScale.isFinite, viewScale > 0 else { return 6 }
+        return 6 / viewScale
+    }
+
+    /// Topmost element under `point`.
+    /// - Parameter allowsInterior: `true` for the select tool, where the
+    ///   (padded) bounding box of any element counts. `false` for drawing
+    ///   tools: only the visible stroke or filled body counts, and the
+    ///   already-selected element gets a slightly more forgiving band.
+    private func hitTestElement(at point: CGPoint, allowsInterior: Bool) -> Int? {
+        let tolerance = hitTolerance
         for index in elements.indices.reversed() {
-            if boundingRect(of: elements[index]).insetBy(dx: -10, dy: -10).contains(point) {
+            let band = index == selectedElementIndex ? tolerance * 1.6 : tolerance
+            if isPoint(point, onVisiblePartOf: elements[index], tolerance: band) {
+                return index
+            }
+        }
+        guard allowsInterior else { return nil }
+        for index in elements.indices.reversed() {
+            if boundingRect(of: elements[index]).insetBy(dx: -tolerance, dy: -tolerance).contains(point) {
                 return index
             }
         }
         return nil
     }
 
+    private func isPoint(
+        _ point: CGPoint,
+        onVisiblePartOf element: AnnotationElement,
+        tolerance: CGFloat
+    ) -> Bool {
+        switch element {
+        case .rectangle(let rect, _, let width, _):
+            return AnnotationHitGeometry.rectangleStrokeContains(
+                point, rect: rect, lineWidth: width, tolerance: tolerance
+            )
+        case .ellipse(let rect, _, let width, _):
+            return AnnotationHitGeometry.ellipseStrokeContains(
+                point, rect: rect, lineWidth: width, tolerance: tolerance
+            )
+        case .arrow(let start, let end, _, let width, _):
+            return AnnotationHitGeometry.arrowContains(
+                point, start: start, end: end, lineWidth: width, tolerance: tolerance
+            )
+        case .pen(let points, _, let width, _), .highlighter(let points, _, let width):
+            return AnnotationHitGeometry.polylineContains(
+                point, points: points, lineWidth: width, tolerance: tolerance
+            )
+        case .mosaicStroke(let points, let width):
+            return AnnotationHitGeometry.polylineContains(
+                point, points: points, lineWidth: width, tolerance: tolerance
+            )
+        case .text, .number:
+            return boundingRect(of: element).insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+        case .mosaic, .blur, .magnify:
+            // Filled regions: their whole body is visible.
+            return boundingRect(of: element).contains(point)
+        }
+    }
+
     private func beginDirectManipulation(index: Int, start: CGPoint, mode: DirectManipulationMode) {
         guard elements.indices.contains(index) else { return }
-        registerUndo()
+        // No undo step yet: a click that only selects must not pollute the
+        // undo stack or clear redo. See `mouseUp`.
+        snapshotBeforeManipulation = currentSnapshot
+        didManipulateElement = false
         selectedElementIndex = index
         selectedElementBeforeDrag = elements[index]
         directManipulationMode = mode
         dragStart = start
         dragCurrent = start
         needsDisplay = true
+    }
+
+    private func endDirectManipulation() {
+        dragStart = nil
+        dragCurrent = nil
+        selectedElementBeforeDrag = nil
+        snapshotBeforeManipulation = nil
+        didManipulateElement = false
+        directManipulationMode = nil
     }
 
     private func resizeHandle(at viewPoint: CGPoint, for element: AnnotationElement) -> AnnotationResizeHandle? {
@@ -1545,6 +1711,31 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         color.setFill()
         let points = TaperedArrowGeometry.polygon(from: start, to: end, width: width)
         guard let first = points.first else { return }
+        if dashed, points.count == 7, hypot(end.x - start.x, end.y - start.y) > 0.5 {
+            // Dashed arrows keep a solid head and get a dashed shaft; a
+            // tapered filled polygon cannot carry a dash pattern.
+            let neck = CGPoint(
+                x: (points[1].x + points[5].x) / 2,
+                y: (points[1].y + points[5].y) / 2
+            )
+            color.setStroke()
+            let shaft = NSBezierPath()
+            shaft.lineWidth = max(1.5, width * 0.9)
+            shaft.lineCapStyle = .butt
+            let pattern: [CGFloat] = [max(4, shaft.lineWidth * 2), max(3, shaft.lineWidth * 1.4)]
+            shaft.setLineDash(pattern, count: pattern.count, phase: 0)
+            shaft.move(to: start)
+            shaft.line(to: neck)
+            shaft.stroke()
+
+            let head = NSBezierPath()
+            head.move(to: points[2])
+            head.line(to: points[3])
+            head.line(to: points[4])
+            head.close()
+            head.fill()
+            return
+        }
         let path = NSBezierPath()
         path.move(to: first)
         points.dropFirst().forEach { path.line(to: $0) }

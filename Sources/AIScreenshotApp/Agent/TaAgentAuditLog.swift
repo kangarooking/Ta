@@ -12,12 +12,53 @@ struct TaAgentAuditEntry: Codable, Equatable, Identifiable, Sendable {
     let durationMs: Int
     let cloudUploaded: Bool
     let errorCode: AgentErrorCode?
+    /// Capture target summary (kind plus app name / bundle ID). Never a window title.
+    let target: String?
+    /// Destination written by deliver.save, when the call saved a file.
+    let savedPath: String?
+
+    init(
+        requestID: String,
+        occurredAt: Date,
+        clientName: String,
+        clientVersion: String,
+        method: AgentMethod,
+        succeeded: Bool,
+        durationMs: Int,
+        cloudUploaded: Bool,
+        errorCode: AgentErrorCode?,
+        target: String? = nil,
+        savedPath: String? = nil
+    ) {
+        self.requestID = requestID
+        self.occurredAt = occurredAt
+        self.clientName = clientName
+        self.clientVersion = clientVersion
+        self.method = method
+        self.succeeded = succeeded
+        self.durationMs = durationMs
+        self.cloudUploaded = cloudUploaded
+        self.errorCode = errorCode
+        self.target = target
+        self.savedPath = savedPath
+    }
+
+    var detailText: String? {
+        let parts = [target.map { "目标：\($0)" }, savedPath.map { "保存到：\($0)" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     var id: String { "\(requestID)-\(occurredAt.timeIntervalSince1970)" }
 }
 
 actor TaAgentAuditLog {
-    static let defaultMaximumEntries = 100
+    static let defaultMaximumEntries = 2_000
+
+    /// Cheap read-only probes are not audited, so that polling `ta status`
+    /// cannot evict capture and upload records from the ring.
+    static let unloggedMethods: Set<AgentMethod> = [
+        .systemHandshake, .systemStatus, .systemCapabilities, .systemPermissions
+    ]
 
     let fileURL: URL
     let maximumEntries: Int
@@ -35,7 +76,8 @@ actor TaAgentAuditLog {
         response: AgentResponseEnvelope,
         occurredAt: Date = Date()
     ) throws {
-        var entries = try readEntries()
+        guard !Self.unloggedMethods.contains(request.method) else { return }
+        var entries = readEntriesRecoveringFromCorruption()
         entries.append(TaAgentAuditEntry(
             requestID: Self.requestFingerprint(request.requestID),
             occurredAt: occurredAt,
@@ -45,7 +87,9 @@ actor TaAgentAuditLog {
             succeeded: response.ok,
             durationMs: max(0, response.meta?.durationMs ?? 0),
             cloudUploaded: response.meta?.cloudUploaded ?? false,
-            errorCode: response.error?.code
+            errorCode: response.error?.code,
+            target: Self.targetSummary(response),
+            savedPath: Self.savedPath(request: request, response: response)
         ))
         if entries.count > maximumEntries {
             entries.removeFirst(entries.count - maximumEntries)
@@ -55,7 +99,7 @@ actor TaAgentAuditLog {
 
     func recent(limit: Int = 20) throws -> [TaAgentAuditEntry] {
         guard limit > 0 else { return [] }
-        return Array(try readEntries().suffix(limit).reversed())
+        return Array(readEntriesRecoveringFromCorruption().suffix(limit).reversed())
     }
 
     func clear() throws {
@@ -71,6 +115,49 @@ actor TaAgentAuditLog {
         )
     }
 
+    /// A truncated or otherwise undecodable log must not disable auditing forever:
+    /// the bad file is moved aside (one copy is kept for inspection) and the log
+    /// starts fresh.
+    private func readEntriesRecoveringFromCorruption() -> [TaAgentAuditEntry] {
+        do {
+            return try readEntries()
+        } catch {
+            let fileManager = FileManager.default
+            let quarantineURL = fileURL.appendingPathExtension("corrupt")
+            try? fileManager.removeItem(at: quarantineURL)
+            do {
+                try fileManager.moveItem(at: fileURL, to: quarantineURL)
+            } catch {
+                try? fileManager.removeItem(at: fileURL)
+            }
+            return []
+        }
+    }
+
+    private static func targetSummary(_ response: AgentResponseEnvelope) -> String? {
+        guard case .object(let data) = response.data,
+              case .object(let target) = data["target"] else { return nil }
+        var parts: [String] = []
+        if case .string(let kind) = target["kind"] { parts.append(kind) }
+        if case .string(let appName) = target["appName"] { parts.append(appName) }
+        if case .string(let bundleIdentifier) = target["bundleIdentifier"] { parts.append(bundleIdentifier) }
+        if parts.count <= 1, case .integer(let displayID) = target["displayId"] {
+            parts.append("display \(displayID)")
+        }
+        guard !parts.isEmpty else { return nil }
+        return sanitizedField(parts.joined(separator: " "), limit: 200)
+    }
+
+    private static func savedPath(
+        request: AgentRequestEnvelope,
+        response: AgentResponseEnvelope
+    ) -> String? {
+        guard request.method == .deliverSave, response.ok,
+              case .object(let data) = response.data,
+              case .string(let path) = data["path"] else { return nil }
+        return sanitizedField(path, limit: 1_024)
+    }
+
     private func write(_ entries: [TaAgentAuditEntry]) throws {
         let fileManager = FileManager.default
         let directory = fileURL.deletingLastPathComponent()
@@ -81,10 +168,16 @@ actor TaAgentAuditLog {
     }
 
     private static func sanitizedClientField(_ value: String) -> String {
-        String(value
-            .unicodeScalars
-            .filter { !CharacterSet.controlCharacters.contains($0) }
-            .prefix(80))
+        sanitizedField(value, limit: 80)
+    }
+
+    private static func sanitizedField(_ value: String, limit: Int) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in value.unicodeScalars where !CharacterSet.controlCharacters.contains(scalar) {
+            if scalars.count >= limit { break }
+            scalars.append(scalar)
+        }
+        return String(scalars)
     }
 
     private static func requestFingerprint(_ requestID: String) -> String {

@@ -13,7 +13,8 @@ export function registerDeliverTool(ctx: Context, runtime: TaToolRuntime, config
     parameters: {
       action: { type: 'string', enum: ['save', 'copyText', 'copyImage'], required: true },
       artifactId: { type: 'string', description: 'Ta artifact ID; omit for the latest image.' },
-      path: { type: 'string', description: 'Required absolute destination for save.' },
+      path: { type: 'string', description: 'Required absolute .png destination for save. Hidden paths, ~/Library and system directories are refused.' },
+      overwrite: { type: 'boolean', description: 'Allow save to replace an existing file. Defaults to false.' },
       text: { type: 'string', description: 'Required content for copyText.' },
     },
     output: {
@@ -27,6 +28,7 @@ export function registerDeliverTool(ctx: Context, runtime: TaToolRuntime, config
         const params: Record<string, JSONValue> = {
           ...runtime.imageParams(args.artifactId),
           path,
+          ...(args.overwrite === true ? { overwrite: true } : {}),
         }
         return runtime.call('deliver.save', params, exec.signal)
       }

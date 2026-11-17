@@ -10,11 +10,15 @@ struct TaCLI {
         let invocation: CLIInvocation
         do {
             invocation = try CLIParser.parse(arguments)
-        } catch let error as CLIParseError {
-            write(error.message, to: .standardError)
-            Darwin.exit(CLIExitCode.usage.rawValue)
         } catch {
-            write(error.localizedDescription, to: .standardError)
+            // The invocation could not be parsed, so honour --json from the raw arguments.
+            if arguments.contains("--json") {
+                let response = CLIErrorMapper.response(for: error, requestID: "unknown")
+                emit(response, format: .json)
+            } else {
+                let message = (error as? CLIParseError)?.message ?? error.localizedDescription
+                write(message, to: .standardError)
+            }
             Darwin.exit(CLIExitCode.usage.rawValue)
         }
 
@@ -25,25 +29,34 @@ struct TaCLI {
         signalSource.resume()
         defer { signalSource.cancel() }
 
+        let response: AgentResponseEnvelope
         do {
-            let response = try await execution.value
-            let rendered = try CLIOutput.render(response, format: invocation.outputFormat)
-            let destination: FileHandle = response.ok ? .standardOutput : .standardError
-            write(rendered, to: destination)
-            Darwin.exit(CLIExitCode.forResponse(response).rawValue)
-        } catch is CancellationError {
-            write("CANCELLED: 请求已取消。", to: .standardError)
-            Darwin.exit(CLIExitCode.cancelled.rawValue)
-        } catch let error as TaAppLauncherError {
-            write("TA_APP_NOT_INSTALLED: \(error.localizedDescription)", to: .standardError)
-            Darwin.exit(CLIExitCode.appNotInstalled.rawValue)
-        } catch let error as TaBridgeClientError {
-            write("BRIDGE_UNAVAILABLE: \(error.localizedDescription)", to: .standardError)
-            Darwin.exit(CLIExitCode.bridgeUnavailable.rawValue)
+            response = try await execution.value
         } catch {
-            write("INTERNAL_ERROR: \(error.localizedDescription)", to: .standardError)
-            Darwin.exit(CLIExitCode.requestFailed.rawValue)
+            // Thrown errors use the same envelope as Bridge failures, so with
+            // --json the caller always receives JSON (on stderr, like any failure).
+            response = CLIErrorMapper.response(
+                for: error,
+                requestID: invocation.requestID,
+                timeout: invocation.timeout
+            )
         }
+        emit(response, format: invocation.outputFormat)
+        Darwin.exit(CLIExitCode.forResponse(response).rawValue)
+    }
+
+    /// Successes go to stdout and failures to stderr, in the requested format.
+    private static func emit(_ response: AgentResponseEnvelope, format: CLIOutputFormat) {
+        let rendered: String
+        do {
+            rendered = try CLIOutput.render(response, format: format)
+        } catch {
+            rendered = format == .json
+                ? #"{"ok":false,"error":{"code":"INTERNAL_ERROR","message":"无法编码输出。","retryable":false}}"#
+                : "INTERNAL_ERROR: 无法编码输出。"
+        }
+        let destination: FileHandle = response.ok ? .standardOutput : .standardError
+        write(rendered, to: destination)
     }
 
     private static func write(_ string: String, to handle: FileHandle) {

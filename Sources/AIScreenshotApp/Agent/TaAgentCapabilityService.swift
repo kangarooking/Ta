@@ -93,6 +93,7 @@ actor TaAgentCapabilityService {
     private let privacyPolicyProvider: @Sendable () -> TaAgentPrivacyPolicy
     private let auditLog: TaAgentAuditLog?
     private let dependencies: TaAgentCapabilityDependencies
+    private let filePolicy: TaAgentFilePolicy
     private var lastImage: CGImage?
     private var lastArtifact: AgentArtifact?
     private var annotationSession: TaAgentAnnotationSession?
@@ -103,7 +104,8 @@ actor TaAgentCapabilityService {
         privacyPolicy: TaAgentPrivacyPolicy? = nil,
         privacyPolicyProvider: @escaping @Sendable () -> TaAgentPrivacyPolicy = { .load() },
         auditLog: TaAgentAuditLog? = TaAgentAuditLog(),
-        dependencies: TaAgentCapabilityDependencies = .live
+        dependencies: TaAgentCapabilityDependencies = .live,
+        filePolicy: TaAgentFilePolicy? = nil
     ) {
         self.captureService = captureService
         self.artifactStore = artifactStore
@@ -111,13 +113,18 @@ actor TaAgentCapabilityService {
         self.privacyPolicyProvider = privacyPolicyProvider
         self.auditLog = auditLog
         self.dependencies = dependencies
+        self.filePolicy = filePolicy ?? TaAgentFilePolicy(artifactRoot: artifactStore.rootDirectory)
+        // The service is created when the Bridge starts: expire stale artifacts now
+        // instead of waiting for the next capture.
+        Task { await artifactStore.cleanupExpiredIfDue() }
     }
 
     func handle(_ request: AgentRequestEnvelope) async -> AgentResponseEnvelope {
         let startedAt = Date()
+        let cloud = CloudUploadTracker()
         let response: AgentResponseEnvelope
         do {
-            response = try await dispatch(request)
+            response = try await dispatch(request, cloud: cloud)
         } catch let failure as CapabilityFailure {
             response = .failure(requestID: request.requestID, error: failure.payload)
         } catch is CancellationError {
@@ -135,7 +142,7 @@ actor TaAgentCapabilityService {
                 )
             )
         }
-        let completed = await withMetadata(response, request: request, startedAt: startedAt)
+        let completed = withMetadata(response, cloudUploaded: cloud.uploaded, startedAt: startedAt)
         if let auditLog {
             try? await auditLog.record(request: request, response: completed, occurredAt: startedAt)
         }
@@ -146,7 +153,10 @@ actor TaAgentCapabilityService {
         fixedPrivacyPolicy ?? privacyPolicyProvider()
     }
 
-    private func dispatch(_ request: AgentRequestEnvelope) async throws -> AgentResponseEnvelope {
+    private func dispatch(
+        _ request: AgentRequestEnvelope,
+        cloud: CloudUploadTracker
+    ) async throws -> AgentResponseEnvelope {
         if !privacyPolicy.isEnabled,
            ![AgentMethod.systemHandshake, .systemStatus, .systemCapabilities, .systemPermissions].contains(request.method) {
             throw CapabilityFailure(AgentErrorPayload(
@@ -172,13 +182,13 @@ actor TaAgentCapabilityService {
         case .captureDisplay, .captureFrontmost, .captureWindow, .captureRegion:
             return try await capture(request)
         case .recognizeOCR:
-            return try await recognizeOCR(request)
+            return try await recognizeOCR(request, cloud: cloud)
         case .analyzeImage:
-            return try await analyze(request)
+            return try await analyze(request, cloud: cloud)
         case .translateText:
-            return try await translateText(request)
+            return try await translateText(request, cloud: cloud)
         case .translateImage:
-            return try await translateImage(request)
+            return try await translateImage(request, cloud: cloud)
         case .transformImage:
             return try await transformImage(request)
         case .deliverCopy:
@@ -209,7 +219,28 @@ actor TaAgentCapabilityService {
             data: .object([
                 "methods": .array(Self.supportedMethods.map { .string($0.rawValue) }),
                 "capturePolicies": .array(AgentCapturePolicy.allCases.map { .string($0.rawValue) }),
-                "cloudPolicies": .array(AgentCloudPolicy.allCases.map { .string($0.rawValue) })
+                "cloudPolicies": .array(AgentCloudPolicy.allCases.map { .string($0.rawValue) }),
+                "effectiveCloudPolicy": .string(privacyPolicy.cloudPolicy.rawValue),
+                "optionalParams": .object([
+                    "capture.*": .array([.string("maxDimension")]),
+                    "capture.window": .array([.string("windowId"), .string("app"), .string("title")]),
+                    "recognize.ocr": .array([
+                        .string("inputPath"), .string("languages"), .string("mergeWrappedLines"),
+                        .string("boxes"), .string("cloud")
+                    ]),
+                    "analyze.image": .array([.string("inputPath"), .string("task"), .string("cloud")]),
+                    "translate.text": .array([.string("text"), .string("cloud")]),
+                    "translate.image": .array([.string("inputPath"), .string("cloud")]),
+                    "deliver.save": .array([.string("path"), .string("inputPath"), .string("overwrite")])
+                ]),
+                "limits": .object([
+                    "maxDimensionMin": .integer(Int64(Self.minimumMaxDimension)),
+                    "maxDimensionMax": .integer(Int64(Self.maximumMaxDimension)),
+                    "inputImageExtensions": .array(
+                        TaAgentFilePolicy.readableImageExtensions.sorted().map { .string($0) }
+                    ),
+                    "saveExtension": .string("png")
+                ])
             ])
         )
     }
@@ -273,7 +304,8 @@ actor TaAgentCapabilityService {
                 retryable: false
             ))
         }
-        let target = try captureTarget(for: request)
+        let maxDimension = try maxDimensionParameter(request)
+        let target = try await captureTarget(for: request)
         let prepared: TaAgentPreparedCapture
         do {
             prepared = try await captureService.prepare(target)
@@ -292,49 +324,100 @@ actor TaAgentCapabilityService {
         } catch {
             throw captureFailure(error)
         }
-        let png = try Self.pngData(result.image)
+        let image = try maxDimension.map { try Self.downscaled(result.image, maxDimension: $0) }
+            ?? result.image
+        let png = try Self.pngData(image)
         let artifact = try await artifactStore.save(
             data: png,
             requestID: request.requestID,
             filename: "capture.png",
             mimeType: "image/png",
-            width: result.image.width,
-            height: result.image.height
+            width: image.width,
+            height: image.height
         )
-        lastImage = result.image
+        // `last` always refers to exactly the pixels the caller received, so
+        // annotation coordinates measured on the artifact stay valid.
+        lastImage = image
         lastArtifact = artifact
         annotationSession = nil
+        let frameWidth = Double(result.target.frame.width)
+        let pixelsPerPoint = frameWidth > 0 ? Double(image.width) / frameWidth : 1
         return .success(
             requestID: request.requestID,
-            data: .object(["target": targetJSON(result.target)]),
+            data: .object([
+                "target": targetJSON(result.target),
+                "image": .object([
+                    "width": .integer(Int64(image.width)),
+                    "height": .integer(Int64(image.height)),
+                    "originalWidth": .integer(Int64(result.image.width)),
+                    "originalHeight": .integer(Int64(result.image.height)),
+                    "downscaled": .bool(image.width != result.image.width || image.height != result.image.height),
+                    "pixelsPerPoint": .number(pixelsPerPoint)
+                ])
+            ]),
             artifacts: [artifact]
         )
     }
 
-    private func recognizeOCR(_ request: AgentRequestEnvelope) async throws -> AgentResponseEnvelope {
+    private func recognizeOCR(
+        _ request: AgentRequestEnvelope,
+        cloud: CloudUploadTracker
+    ) async throws -> AgentResponseEnvelope {
         let image = try loadImage(request)
         let engine = await dependencies.ocrEngine()
-        if engine == .deepSeekOCR2,
-           let error = privacyPolicy.cloudError(requested: request.params.cloudPolicy) {
-            throw CapabilityFailure(error)
+        if engine == .deepSeekOCR2 {
+            if let error = privacyPolicy.cloudError(requested: request.params.cloudPolicy) {
+                throw CapabilityFailure(error)
+            }
+            // Set before the call: the image leaves the device even if the call then fails.
+            cloud.uploaded = true
         }
         let languages = request.params.stringArray("languages") ?? defaultLanguages()
         let merge = request.params.bool("mergeWrappedLines")
             ?? UserDefaults.standard.bool(forKey: "mergeWrappedLines")
         let result = try await dependencies.recognizeOCR(image, languages, merge)
-        return .success(
-            requestID: request.requestID,
-            data: .object([
-                "text": .string(result.text),
-                "confidence": .number(Double(result.confidence)),
-                "contentType": .string(result.contentType.rawValue),
-                "engine": .string(result.engine.rawValue),
-                "languages": .array(result.languages.map { .string($0) })
-            ])
-        )
+        if result.engine == .deepSeekOCR2 { cloud.uploaded = true }
+        var data: [String: JSONValue] = [
+            "text": .string(result.text),
+            "confidence": .number(Double(result.confidence)),
+            "contentType": .string(result.contentType.rawValue),
+            "engine": .string(result.engine.rawValue),
+            "languages": .array(result.languages.map { .string($0) })
+        ]
+        if request.params.bool("boxes") == true {
+            let lines = result.document.blocks.flatMap(\.lines)
+            data["lines"] = .array(lines.map { Self.lineJSON($0, image: image) })
+            data["imageWidth"] = .integer(Int64(image.width))
+            data["imageHeight"] = .integer(Int64(image.height))
+            // Engines without layout output (e.g. cloud OCR) return no line boxes.
+            data["boxesAvailable"] = .bool(!lines.isEmpty)
+        }
+        return .success(requestID: request.requestID, data: .object(data))
     }
 
-    private func analyze(_ request: AgentRequestEnvelope) async throws -> AgentResponseEnvelope {
+    /// Converts a normalized, bottom-left-origin OCR box into top-left-origin pixels
+    /// of the recognized image (the same space annotation recipes use).
+    private static func lineJSON(_ line: OCRTextLine, image: CGImage) -> JSONValue {
+        let width = Double(image.width)
+        let height = Double(image.height)
+        let box = line.boundingBox.standardized
+        func finite(_ value: Double) -> Double { value.isFinite ? value : 0 }
+        return .object([
+            "text": .string(line.text),
+            "confidence": .number(Double(line.confidence)),
+            "box": .object([
+                "x": .number(finite(Double(box.minX) * width)),
+                "y": .number(finite((1 - Double(box.maxY)) * height)),
+                "width": .number(finite(Double(box.width) * width)),
+                "height": .number(finite(Double(box.height) * height))
+            ])
+        ])
+    }
+
+    private func analyze(
+        _ request: AgentRequestEnvelope,
+        cloud: CloudUploadTracker
+    ) async throws -> AgentResponseEnvelope {
         if let error = privacyPolicy.cloudError(requested: request.params.cloudPolicy) {
             throw CapabilityFailure(error)
         }
@@ -351,22 +434,32 @@ actor TaAgentCapabilityService {
         guard let task = MultimodalTaskTemplate(rawValue: taskRaw) else {
             throw invalid("未知的识图任务模板：\(taskRaw)")
         }
+        cloud.uploaded = true
         let text = try await dependencies.analyzeImage(image, task)
         return .success(requestID: request.requestID, data: .object(["text": .string(text)]))
     }
 
-    private func translateText(_ request: AgentRequestEnvelope) async throws -> AgentResponseEnvelope {
+    private func translateText(
+        _ request: AgentRequestEnvelope,
+        cloud: CloudUploadTracker
+    ) async throws -> AgentResponseEnvelope {
         try await ensureTranslationAllowed(request)
         guard let text = request.params.string("text"), !text.isEmpty else {
             throw invalid("translate.text 需要非空 text 参数。")
         }
+        cloud.uploaded = true
         let translated = try await dependencies.translateText(text)
         return .success(requestID: request.requestID, data: .object(["text": .string(translated)]))
     }
 
-    private func translateImage(_ request: AgentRequestEnvelope) async throws -> AgentResponseEnvelope {
+    private func translateImage(
+        _ request: AgentRequestEnvelope,
+        cloud: CloudUploadTracker
+    ) async throws -> AgentResponseEnvelope {
         try await ensureTranslationAllowed(request)
-        let translated = try await dependencies.translateImage(try loadImage(request))
+        let image = try loadImage(request)
+        cloud.uploaded = true
+        let translated = try await dependencies.translateImage(image)
         return .success(requestID: request.requestID, data: .object(["text": .string(translated)]))
     }
 
@@ -455,15 +548,29 @@ actor TaAgentCapabilityService {
         guard let path = request.params.string("path"), path.hasPrefix("/") else {
             throw invalid("deliver.save 需要绝对路径 path。")
         }
+        let overwrite = request.params.bool("overwrite") ?? false
+        let outputURL: URL
+        do {
+            outputURL = try filePolicy.saveDestination(path: path, overwrite: overwrite)
+        } catch let error as TaAgentFilePolicyError {
+            throw invalid(error.message)
+        }
         let image = try loadImage(request)
-        let outputURL = URL(fileURLWithPath: path).standardizedFileURL
         let data = try Self.pngData(image)
-        try data.write(to: outputURL, options: .atomic)
+        do {
+            // Without overwrite the write itself refuses an existing file, closing
+            // the window between the policy check and the write.
+            try data.write(to: outputURL, options: overwrite ? .atomic : .withoutOverwriting)
+        } catch {
+            throw invalid("无法保存到 \(outputURL.path)：\(error.localizedDescription)")
+        }
         return .success(
             requestID: request.requestID,
             data: .object([
                 "path": .string(outputURL.path),
-                "bytes": .integer(Int64(data.count))
+                "bytes": .integer(Int64(data.count)),
+                "width": .integer(Int64(image.width)),
+                "height": .integer(Int64(image.height))
             ])
         )
     }
@@ -484,7 +591,12 @@ actor TaAgentCapabilityService {
 
     private func loadImage(_ request: AgentRequestEnvelope) throws -> CGImage {
         if let path = request.params.string("inputPath") {
-            let url = URL(fileURLWithPath: path).standardizedFileURL
+            let url: URL
+            do {
+                url = try filePolicy.readableImage(path: path)
+            } catch let error as TaAgentFilePolicyError {
+                throw invalid(error.message)
+            }
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
                 throw invalid("无法读取图片：\(url.path)")
@@ -495,17 +607,36 @@ actor TaAgentCapabilityService {
         return lastImage
     }
 
-    private func captureTarget(for request: AgentRequestEnvelope) throws -> TaAgentCaptureTarget {
+    private func captureTarget(for request: AgentRequestEnvelope) async throws -> TaAgentCaptureTarget {
         switch request.method {
         case .captureDisplay:
             return .display(id: request.params.uint32("displayId"))
         case .captureFrontmost:
             return .frontmost
         case .captureWindow:
-            guard let id = request.params.uint32("windowId") else {
-                throw invalid("capture.window 需要 windowId。")
+            if let id = request.params.uint32("windowId") {
+                return .window(id: id)
             }
-            return .window(id: id)
+            let app = Self.searchTerm(request.params.string("app") ?? request.params.string("bundleIdentifier"))
+            let title = Self.searchTerm(request.params.string("title"))
+            guard app != nil || title != nil else {
+                throw invalid("capture.window 需要 windowId，或 app / title 之一。")
+            }
+            let snapshot: TaAgentCaptureSnapshot
+            do {
+                snapshot = try await captureService.snapshot()
+            } catch {
+                throw captureFailure(error)
+            }
+            guard let window = Self.bestWindow(in: snapshot.windows, app: app, title: title) else {
+                throw CapabilityFailure(AgentErrorPayload(
+                    code: .targetNotFound,
+                    message: "找不到匹配的窗口（app=\(app ?? "-")，title=\(title ?? "-")）。",
+                    hint: "先用 target.listWindows 查看当前可见窗口，或确认目标 App 有窗口显示在屏幕上。",
+                    retryable: false
+                ))
+            }
+            return .window(id: window.id)
         case .captureRegion:
             guard let displayID = request.params.uint32("displayId"),
                   let x = request.params.number("x"),
@@ -521,6 +652,81 @@ actor TaAgentCapabilityService {
         default:
             throw invalid("不是截图方法。")
         }
+    }
+
+    private static func searchTerm(_ raw: String?) -> String? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// Picks the window an "app name / title substring" request most plausibly
+    /// means: exact app matches beat substring matches, real windows beat tiny
+    /// helper surfaces, and the frontmost candidate wins.
+    static func bestWindow(
+        in windows: [TaAgentWindowTarget],
+        app: String?,
+        title: String?
+    ) -> TaAgentWindowTarget? {
+        func appRank(_ window: TaAgentWindowTarget) -> Int? {
+            guard let app else { return 0 }
+            let name = window.appName.lowercased()
+            if window.bundleIdentifier?.lowercased() == app || name == app { return 0 }
+            return name.contains(app) ? 1 : nil
+        }
+        var candidates: [(window: TaAgentWindowTarget, rank: Int)] = []
+        for window in windows {
+            guard let rank = appRank(window) else { continue }
+            if let title {
+                guard window.title?.lowercased().contains(title) == true else { continue }
+            }
+            candidates.append((window, rank))
+        }
+        guard let bestRank = candidates.map({ $0.rank }).min() else { return nil }
+        let ranked = candidates.filter { $0.rank == bestRank }.map { $0.window }
+        let sizable = ranked.filter { $0.frame.width >= 120 && $0.frame.height >= 80 }
+        return (sizable.isEmpty ? ranked : sizable).min { $0.zOrder < $1.zOrder }
+    }
+
+    static let minimumMaxDimension = 16
+    static let maximumMaxDimension = 16_384
+
+    private func maxDimensionParameter(_ request: AgentRequestEnvelope) throws -> Int? {
+        switch request.params["maxDimension"] {
+        case nil, .some(.null): return nil
+        default: break
+        }
+        guard let value = request.params.number("maxDimension"), value.isFinite,
+              value >= Double(Self.minimumMaxDimension),
+              value <= Double(Self.maximumMaxDimension) else {
+            throw invalid(
+                "maxDimension 必须是 \(Self.minimumMaxDimension) 到 \(Self.maximumMaxDimension) 之间的数字。"
+            )
+        }
+        return Int(value.rounded())
+    }
+
+    /// Scales the image down so its longer side is at most `maxDimension` pixels.
+    /// Images that are already small enough are returned unchanged.
+    static func downscaled(_ image: CGImage, maxDimension: Int) throws -> CGImage {
+        let longest = max(image.width, image.height)
+        guard maxDimension > 0, longest > maxDimension else { return image }
+        let ratio = Double(maxDimension) / Double(longest)
+        let width = max(1, Int((Double(image.width) * ratio).rounded()))
+        let height = max(1, Int((Double(image.height) * ratio).rounded()))
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw CapabilityFailure.encodingFailed }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else { throw CapabilityFailure.encodingFailed }
+        return scaled
     }
 
     private func captureFailure(_ error: Error) -> CapabilityFailure {
@@ -550,27 +756,19 @@ actor TaAgentCapabilityService {
 
     private func withMetadata(
         _ response: AgentResponseEnvelope,
-        request: AgentRequestEnvelope,
+        cloudUploaded: Bool,
         startedAt: Date
-    ) async -> AgentResponseEnvelope {
-        let usedCloud: Bool
-        switch request.method {
-        case .analyzeImage, .translateText, .translateImage:
-            usedCloud = response.ok
-        case .recognizeOCR:
-            let engine = await dependencies.ocrEngine()
-            usedCloud = response.ok && engine == .deepSeekOCR2
-        default:
-            usedCloud = false
-        }
-        return AgentResponseEnvelope(
+    ) -> AgentResponseEnvelope {
+        AgentResponseEnvelope(
             requestID: response.requestID,
             ok: response.ok,
             data: response.data,
             artifacts: response.artifacts,
             meta: AgentResponseMetadata(
                 durationMs: max(0, Int(Date().timeIntervalSince(startedAt) * 1_000)),
-                cloudUploaded: usedCloud
+                // True whenever image or text was handed to a cloud model, even
+                // if that call later failed or was cancelled.
+                cloudUploaded: cloudUploaded
             ),
             error: response.error
         )
@@ -624,6 +822,12 @@ actor TaAgentCapabilityService {
         guard CGImageDestinationFinalize(destination) else { throw CapabilityFailure.encodingFailed }
         return data as Data
     }
+}
+
+/// Per-request flag recording that content was actually handed to a cloud model.
+/// Only touched from the capability actor while it handles that one request.
+private final class CloudUploadTracker: @unchecked Sendable {
+    var uploaded = false
 }
 
 private struct CapabilityFailure: Error {

@@ -17,15 +17,36 @@ enum GlobalHotKeyError: LocalizedError {
 
 private let aiScreenshotHotKeySignature: OSType = 0x41495353 // AISS
 
+/// One shortcut that could not be registered with the system.
+struct GlobalHotKeyRegistrationFailure: Equatable, Sendable {
+    let action: GlobalHotKeyAction
+    let shortcut: HotKeyShortcut
+    let status: OSStatus
+
+    var message: String {
+        "“\(action.displayName)”快捷键 \(shortcut.displayText) 已被系统或其他应用占用（\(status)）"
+    }
+
+    static func summary(for failures: [GlobalHotKeyRegistrationFailure]) -> String? {
+        guard !failures.isEmpty else { return nil }
+        return failures.map(\.message).joined(separator: "；") + "。请在“设置 › 快捷键”中换一个组合。"
+    }
+}
+
 @MainActor
 final class GlobalHotKeyManager: NSObject {
     private let preferences = HotKeyPreferences()
     private var eventHandlerRef: EventHandlerRef?
-    private var hotKeyRefs: [EventHotKeyRef] = []
+    private var hotKeyRefs: [GlobalHotKeyAction: EventHotKeyRef] = [:]
     private var actions: [UInt32: () -> Void] = [:]
     private var lastSuccessfulShortcuts: [GlobalHotKeyAction: HotKeyShortcut] = [:]
     private var preferencesObserver: NSObjectProtocol?
 
+    /// Registers every shortcut independently and returns the ones the system
+    /// refused. The preferences observer is installed no matter what, so a
+    /// conflicting shortcut can be rebound without relaunching. Throws only
+    /// when the Carbon event handler itself cannot be installed.
+    @discardableResult
     func registerDefaults(
         interactiveCapture: @escaping () -> Void,
         intelligentCapture: @escaping () -> Void,
@@ -33,7 +54,7 @@ final class GlobalHotKeyManager: NSObject {
         imageCapture: @escaping () -> Void,
         pinCapture: @escaping () -> Void,
         longCapture: @escaping () -> Void
-    ) throws {
+    ) throws -> [GlobalHotKeyRegistrationFailure] {
         actions = [
             GlobalHotKeyAction.interactiveCapture.hotKeyID: interactiveCapture,
             GlobalHotKeyAction.intelligentCapture.hotKeyID: intelligentCapture,
@@ -43,11 +64,14 @@ final class GlobalHotKeyManager: NSObject {
             GlobalHotKeyAction.longCapture.hotKeyID: longCapture
         ]
 
+        observePreferenceChangesIfNeeded()
         try installEventHandlerIfNeeded()
         let shortcuts = preferences.allShortcuts()
-        try register(shortcuts)
-        lastSuccessfulShortcuts = shortcuts
-        observePreferenceChangesIfNeeded()
+        unregisterHotKeys()
+        let failures = register(shortcuts)
+        let failedActions = Set(failures.map(\.action))
+        lastSuccessfulShortcuts = shortcuts.filter { !failedActions.contains($0.key) }
+        return failures
     }
 
     private func installEventHandlerIfNeeded() throws {
@@ -102,18 +126,29 @@ final class GlobalHotKeyManager: NSObject {
     }
 
     private func reloadFromPreferences() {
+        if eventHandlerRef == nil {
+            try? installEventHandlerIfNeeded()
+        }
+        guard eventHandlerRef != nil else { return }
         let requested = preferences.allShortcuts()
         unregisterHotKeys()
-        do {
-            try register(requested)
-            lastSuccessfulShortcuts = requested
-        } catch {
-            unregisterHotKeys()
-            if !lastSuccessfulShortcuts.isEmpty {
-                try? preferences.replaceAll(lastSuccessfulShortcuts, notify: false)
-                try? register(lastSuccessfulShortcuts)
+        let failures = register(requested)
+        let failedActions = Set(failures.map(\.action))
+        var successful = requested.filter { !failedActions.contains($0.key) }
+
+        // Only the shortcuts that failed fall back to their previous working
+        // binding; every other change is kept.
+        for failure in failures {
+            guard let previous = lastSuccessfulShortcuts[failure.action],
+                  previous != failure.shortcut else { continue }
+            try? preferences.replaceAll([failure.action: previous], notify: false)
+            if register([failure.action: previous]).isEmpty {
+                successful[failure.action] = previous
             }
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        lastSuccessfulShortcuts = successful
+
+        if let message = GlobalHotKeyRegistrationFailure.summary(for: failures) {
             NotificationCenter.default.post(
                 name: HotKeyPreferences.registrationFailedNotification,
                 object: nil,
@@ -122,9 +157,17 @@ final class GlobalHotKeyManager: NSObject {
         }
     }
 
-    private func register(_ shortcuts: [GlobalHotKeyAction: HotKeyShortcut]) throws {
+    /// Registers each shortcut on its own; one conflict never prevents the
+    /// remaining shortcuts from working.
+    private func register(
+        _ shortcuts: [GlobalHotKeyAction: HotKeyShortcut]
+    ) -> [GlobalHotKeyRegistrationFailure] {
+        var failures: [GlobalHotKeyRegistrationFailure] = []
         for action in GlobalHotKeyAction.allCases {
             guard let shortcut = shortcuts[action] else { continue }
+            if let existing = hotKeyRefs.removeValue(forKey: action) {
+                UnregisterEventHotKey(existing)
+            }
             var reference: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(signature: aiScreenshotHotKeySignature, id: action.hotKeyID)
             let status = RegisterEventHotKey(
@@ -136,10 +179,14 @@ final class GlobalHotKeyManager: NSObject {
                 &reference
             )
             guard status == noErr, let reference else {
-                throw GlobalHotKeyError.registration(action: action, status: status)
+                failures.append(
+                    GlobalHotKeyRegistrationFailure(action: action, shortcut: shortcut, status: status)
+                )
+                continue
             }
-            hotKeyRefs.append(reference)
+            hotKeyRefs[action] = reference
         }
+        return failures
     }
 
     private func invoke(id: UInt32) {
@@ -147,7 +194,7 @@ final class GlobalHotKeyManager: NSObject {
     }
 
     private func unregisterHotKeys() {
-        hotKeyRefs.forEach { UnregisterEventHotKey($0) }
+        hotKeyRefs.values.forEach { UnregisterEventHotKey($0) }
         hotKeyRefs.removeAll()
     }
 }

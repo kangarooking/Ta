@@ -47,6 +47,7 @@ final class WelcomeWindowController {
             newWindow.isMovableByWindowBackground = true
             newWindow.isReleasedWhenClosed = false
             newWindow.minSize = WelcomeViewMetrics.minimumWindowSize
+            newWindow.appearance = NSAppearance(named: .aqua)
             newWindow.contentView = NSHostingView(rootView: rootView)
             newWindow.center()
             newWindow.makeKeyAndOrderFront(nil)
@@ -132,6 +133,7 @@ private struct WelcomeView: View {
             .padding(WelcomeViewMetrics.contentPadding)
         }
         .tint(TaPalette.cinnabar)
+        .taPaperAppearance()
         .frame(
             minWidth: WelcomeViewMetrics.minimumWindowSize.width,
             minHeight: WelcomeViewMetrics.minimumWindowSize.height

@@ -43,7 +43,7 @@ struct ImageExportService {
 
         let panel = NSSavePanel()
         panel.title = "保存分段长截图"
-        panel.message = "图片过长，将在所选位置保存为 (images.count) 个连续编号的 PNG 文件。"
+        panel.message = "图片过长，将在所选位置保存为 \(images.count) 个连续编号的 PNG 文件。"
         panel.nameFieldStringValue = suggestedBaseName
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true

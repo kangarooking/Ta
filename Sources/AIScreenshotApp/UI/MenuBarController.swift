@@ -31,6 +31,9 @@ final class MenuBarController: NSObject {
 
         popover.behavior = .transient
         popover.animates = true
+        // The menu is drawn on Ta's fixed light paper palette; pin the
+        // appearance so system text stays dark in Dark Mode.
+        popover.appearance = NSAppearance(named: .aqua)
         popover.contentSize = NSSize(width: 326, height: 574)
         popover.contentViewController = NSHostingController(
             rootView: MenuBarContentView(appModel: appModel)

@@ -88,7 +88,7 @@ Run it against `last`, then use `ta transform undo --json` to restore both objec
 
 ## Validation and privacy
 
-Invalid versions, duplicate IDs, missing erase targets, empty paths/text, non-finite coordinates, non-positive sizes, repeated/late crops, and out-of-bounds crops fail with `INVALID_REQUEST`. Do not silently clamp a malformed recipe and do not replace a failed deterministic transform with GUI automation.
+Invalid versions, duplicate IDs, missing erase targets, empty paths/text, non-finite coordinates, non-positive sizes, repeated/late crops, and out-of-bounds crops fail with `INVALID_REQUEST`. So do values above the upper bounds: coordinates and rect sizes up to ±1,000,000; `lineWidth` and `fontSize` up to 2,000; `diameter` up to 4,000; mosaic `scale` up to 512; blur `radius` up to 256; magnify `factor` up to 64; at most 500 operations per recipe, 20,000 points per path, and 4,000 characters per text. Do not silently clamp a malformed recipe and do not replace a failed deterministic transform with GUI automation.
 
 The renderer uses local Core Graphics, Core Text, and Accelerate operations. A successful response must report `meta.cloudUploaded: false` and include a PNG Artifact. Save to a new explicit path when the user needs a durable result.
 
