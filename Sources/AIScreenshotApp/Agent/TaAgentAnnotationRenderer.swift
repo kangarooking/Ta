@@ -53,12 +53,17 @@ struct TaAgentAnnotationRenderer {
                     drawMosaic(operation, filtered: mosaicImage, canvas: canvas, height: height, context: context)
                 }
             case .blur(let operation):
-                let key = Int(operation.radius.rounded())
+                let radius = Self.clamped(
+                    operation.radius,
+                    lower: 1,
+                    upper: AnnotationRecipeLimits.maximumBlurRadius
+                )
+                let key = Int(radius.rounded())
                 let filteredImage: CGImage
                 if let cached = blurImages[key] {
                     filteredImage = cached
                 } else {
-                    filteredImage = try blurred(base, radius: operation.radius)
+                    filteredImage = try blurred(base, radius: radius)
                     blurImages[key] = filteredImage
                 }
                 drawFilteredRect(operation.rect, filtered: filteredImage, canvas: canvas, height: height, context: context)
@@ -250,7 +255,11 @@ struct TaAgentAnnotationRenderer {
     }
 
     private func pixelated(_ image: CGImage, scale: Double) throws -> CGImage {
-        let blockSize = max(2, Int(scale.rounded()))
+        let blockSize = Int(Self.clamped(
+            scale,
+            lower: 2,
+            upper: AnnotationRecipeLimits.maximumMosaicScale
+        ).rounded())
         let smallWidth = max(1, (image.width + blockSize - 1) / blockSize)
         let smallHeight = max(1, (image.height + blockSize - 1) / blockSize)
         guard let smallContext = CGContext(
@@ -314,7 +323,9 @@ struct TaAgentAnnotationRenderer {
         }
         defer { free(destination.data) }
 
-        var kernel = UInt32(max(3, Int((radius * 2 + 1).rounded())))
+        let safeRadius = Self.clamped(radius, lower: 1, upper: AnnotationRecipeLimits.maximumBlurRadius)
+        // safeRadius is bounded, so these conversions cannot trap. vImage needs an odd kernel.
+        var kernel = UInt32(max(3, Int((safeRadius * 2 + 1).rounded())))
         if kernel.isMultiple(of: 2) { kernel += 1 }
         guard vImageBoxConvolve_ARGB8888(
             &source,
@@ -352,6 +363,13 @@ struct TaAgentAnnotationRenderer {
         context.setStrokeColor(cgColor(color))
         context.setLineWidth(width)
         context.setLineDash(phase: 0, lengths: dashed ? [max(4, width * 2), max(3, width * 1.4)] : [])
+    }
+
+    /// Clamps a possibly non-finite value into a range that is always safe to
+    /// convert to an integer type.
+    static func clamped(_ value: Double, lower: Double, upper: Double) -> Double {
+        guard value.isFinite else { return lower }
+        return min(upper, max(lower, value))
     }
 
     private func cgColor(_ color: AnnotationColor) -> CGColor {

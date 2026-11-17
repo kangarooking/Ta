@@ -2,7 +2,10 @@ import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attac
 import { importArtifacts } from './attachments.js'
 import { TaBridgeClient } from './bridge-client.js'
 import type { JSONValue, TaArtifact, TaMethod, TaResponse } from './contracts.js'
-import { TaResponseError } from './contracts.js'
+import { CLOUD_CAPABLE_METHODS, TaResponseError } from './contracts.js'
+
+/** Cloud-capable calls routinely exceed the short default Bridge timeout. */
+const CLOUD_CAPABLE_TIMEOUT_MS = 180_000
 
 export interface TaToolArtifactValue {
   taArtifactId: string
@@ -45,11 +48,12 @@ export class TaToolRuntime {
     params: Record<string, JSONValue>,
     signal?: AbortSignal,
   ): Promise<TaToolValue> {
-    const response = await this.bridge.request(
-      method,
-      params,
-      signal === undefined ? {} : { signal },
-    )
+    const response = await this.bridge.request(method, params, {
+      ...(signal === undefined ? {} : { signal }),
+      ...(CLOUD_CAPABLE_METHODS.has(method)
+        ? { timeoutMs: Math.max(this.bridge.config.timeoutMs, CLOUD_CAPABLE_TIMEOUT_MS) }
+        : {}),
+    })
     if (!response.ok) {
       throw new TaResponseError(response.error ?? {
         code: 'INTERNAL_ERROR', message: 'Ta returned an unknown failure.', retryable: false,

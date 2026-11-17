@@ -48,7 +48,8 @@ struct AgentSettingsView: View {
     true
   @AppStorage(TaAgentPreferenceKey.cloudPolicy) private var cloudPolicy = AgentCloudPolicy.auto
     .rawValue
-  @AppStorage(TaAgentPreferenceKey.privacyDenylist) private var privacyDenylist = ""
+  @AppStorage(TaAgentPreferenceKey.privacyDenylist) private var privacyDenylist =
+    TaAgentPrivacyPolicy.defaultDenylistText
   @AppStorage(TaAgentPreferenceKey.allowCaptureTa) private var allowCaptureTa = true
 
   @State private var recentCalls: [TaAgentAuditEntry] = []
@@ -113,6 +114,16 @@ struct AgentSettingsView: View {
           Text("每行填写一个 Bundle ID，例如 com.1password.1password。截显示器时，只要画面包含黑名单 App 就会拒绝截图。")
             .font(.caption)
             .foregroundStyle(.secondary)
+          HStack {
+            Text("默认已屏蔽常见密码管理器（1Password、Bitwarden、钥匙串访问、密码 App、LastPass、Dashlane、KeePassXC、Enpass 等）。")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Spacer()
+            Button("恢复默认") {
+              privacyDenylist = TaAgentPrivacyPolicy.defaultDenylistText
+            }
+            .disabled(!accessEnabled || privacyDenylist == TaAgentPrivacyPolicy.defaultDenylistText)
+          }
           Toggle("允许 Agent 截取拓自身", isOn: $allowCaptureTa)
             .disabled(!accessEnabled)
         }
@@ -147,7 +158,9 @@ struct AgentSettingsView: View {
             ForEach(recentCalls.prefix(8)) { entry in
               auditRow(entry)
             }
-            Text("仅保留最近 100 次调用；不记录请求参数和识别内容。")
+            Text(
+              "仅保留最近 \(TaAgentAuditLog.defaultMaximumEntries) 次调用（状态、能力、权限查询不计入）；只记录截图目标 App 与保存路径，不记录请求参数和识别内容。"
+            )
               .font(.caption)
               .foregroundStyle(.secondary)
           }
@@ -310,6 +323,13 @@ struct AgentSettingsView: View {
         )
         .font(.caption2)
         .foregroundStyle(.secondary)
+        if let detail = entry.detailText {
+          Text(detail)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
       }
       Spacer()
       if entry.cloudUploaded {

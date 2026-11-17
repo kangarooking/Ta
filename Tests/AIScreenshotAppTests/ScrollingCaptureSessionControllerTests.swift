@@ -42,300 +42,142 @@ final class ScrollingCaptureSessionControllerTests: XCTestCase {
     XCTAssertEqual(AccessibilityAutoScrollService.scrollEventIntervalMilliseconds, 14)
   }
 
-  func testVisibleMovementContinuesEvenWhenSeamMatcherRejectsFrame() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.begin()
-    progress.didSendScroll()
-    progress.observe(.rejected)
+  func testPlacedFrameResolvesGestureAsProgress() {
     let now = Date()
-
     XCTAssertEqual(
-      ScrollingCaptureSessionController.resolveAutoScrollAttempt(
-        progress: progress,
-        observation: .rejected,
-        motion: ViewportMotionMeasurement(
-          hasReference: true,
-          meanAbsoluteDifference: 24,
-          changedPixelFraction: 0.6,
-          isStationary: false
-        ),
-        now: now,
-        settleDeadline: now.addingTimeInterval(1)
-      ),
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: true, viewportMoved: true, sawMovement: false,
+        now: now, settleDeadline: now.addingTimeInterval(1)),
       .progress
     )
   }
 
-  func testStationaryAttemptIsTheOnlyConditionThatCountsAsBottomProgress() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
+  func testMovingViewportWithoutSeamWaitsInsteadOfBlindStitching() {
     let now = Date()
-
     XCTAssertEqual(
-      ScrollingCaptureSessionController.resolveAutoScrollAttempt(
-        progress: progress,
-        observation: .duplicate,
-        motion: ViewportMotionMeasurement(
-          hasReference: true,
-          meanAbsoluteDifference: 0.4,
-          changedPixelFraction: 0.002,
-          isStationary: true
-        ),
-        now: now,
-        settleDeadline: now
-      ),
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: false, viewportMoved: true, sawMovement: true,
+        now: now, settleDeadline: now.addingTimeInterval(-0.1)),
+      .waiting
+    )
+  }
+
+  func testSettledViewportThatMovedButNeverMatchedIsFlagged() {
+    let now = Date()
+    XCTAssertEqual(
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: false, viewportMoved: false, sawMovement: true,
+        now: now, settleDeadline: now.addingTimeInterval(-0.1)),
+      .movedWithoutMatch
+    )
+  }
+
+  func testSilentGestureIsNoMovementOnlyAfterDeadline() {
+    let now = Date()
+    XCTAssertEqual(
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: false, viewportMoved: false, sawMovement: false,
+        now: now, settleDeadline: now.addingTimeInterval(0.5)),
+      .waiting
+    )
+    XCTAssertEqual(
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: false, viewportMoved: false, sawMovement: false,
+        now: now, settleDeadline: now.addingTimeInterval(-0.1)),
       .noMovement
     )
   }
 
-  func testAccessibilityProgressAtEndDoesNotStopBeforePixelConfirmation() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
+  func testEndlesslyAnimatingViewportIsForceResolved() {
     let now = Date()
-
+    let deadline = now.addingTimeInterval(
+      -ScrollingCaptureSessionController.maximumAutoScrollAnimationTime - 0.1)
     XCTAssertEqual(
-      ScrollingCaptureSessionController.resolveAutoScrollAttempt(
-        progress: progress,
-        observation: .appended(newPixelHeight: 120, confidence: 0.9),
-        motion: ViewportMotionMeasurement(
-          hasReference: true,
-          meanAbsoluteDifference: 18,
-          changedPixelFraction: 0.4,
-          isStationary: false
-        ),
-        scrollProgressBefore: AccessibilityScrollProgress(value: 0.94, minimum: 0, maximum: 1),
-        scrollProgressAfter: AccessibilityScrollProgress(value: 1, minimum: 0, maximum: 1),
-        now: now,
-        settleDeadline: now
-      ),
-      .progress
+      ScrollingCaptureSessionController.resolvePendingGesture(
+        contentAdvanced: false, viewportMoved: true, sawMovement: true,
+        now: now, settleDeadline: deadline),
+      .movedWithoutMatch
     )
   }
 
-  func testBottomSignalRequiresConsecutiveStableFramesAfterScrollbarReachesMaximum() {
-    let end = AccessibilityScrollProgress(value: 1, minimum: 0, maximum: 1)
-    let moving = ViewportMotionMeasurement(
-      hasReference: true,
-      meanAbsoluteDifference: 18,
-      changedPixelFraction: 0.4,
-      isStationary: false
-    )
-    let stable = ViewportMotionMeasurement(
-      hasReference: true,
-      meanAbsoluteDifference: 0.2,
-      changedPixelFraction: 0,
-      isStationary: true
-    )
-
+  func testNeverScrollingIsNotReportedAsReachedEnd() {
     XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .appended(newPixelHeight: 30, confidence: 0.9),
-        motion: stable,
-        scrollProgressAfter: end
-      ),
-      0
+      ScrollingCaptureSessionController.noProgressVerdict(
+        hasTrackedProgress: false, gesturesWithProgress: 0, retargetCount: 0),
+      .notScrolling
     )
     XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .rejected,
-        motion: moving,
-        scrollProgressAfter: end
-      ),
-      0
-    )
-    XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .duplicate,
-        motion: stable,
-        scrollProgressAfter: end
-      ),
-      1
-    )
-    XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 2,
-        observation: .duplicate,
-        motion: stable,
-        scrollProgressAfter: end
-      ),
-      ScrollingCaptureSessionController.requiredBottomConfirmationFrames
+      ScrollingCaptureSessionController.noProgressVerdict(
+        hasTrackedProgress: false, gesturesWithProgress: 3, retargetCount: 0),
+      .reachedEnd
     )
   }
 
-  func testBottomSignalDoesNotCompleteBeforeTheTerminalViewportSettles() {
-    let end = AccessibilityScrollProgress(value: 1, minimum: 0, maximum: 1)
-    let firstBottomFrame = ViewportMotionMeasurement(
-      hasReference: false,
-      meanAbsoluteDifference: 0,
-      changedPixelFraction: 0,
-      isStationary: false
-    )
-    let stillAnimating = ViewportMotionMeasurement(
-      hasReference: true,
-      meanAbsoluteDifference: 12,
-      changedPixelFraction: 0.18,
-      isStationary: false
-    )
-    let settled = ViewportMotionMeasurement(
-      hasReference: true,
-      meanAbsoluteDifference: 0.3,
-      changedPixelFraction: 0.001,
-      isStationary: true
-    )
-
+  func testTrackedScrollbarBelowEndRetargetsBeforeGivingUp() {
     XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .rejected,
-        motion: firstBottomFrame,
-        scrollProgressAfter: end
-      ),
-      0
+      ScrollingCaptureSessionController.noProgressVerdict(
+        hasTrackedProgress: true, gesturesWithProgress: 5, retargetCount: 0),
+      .retarget
     )
     XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .rejected,
-        motion: stillAnimating,
-        scrollProgressAfter: end
-      ),
-      0
-    )
-    XCTAssertEqual(
-      ScrollingCaptureSessionController.advanceBottomConfirmation(
-        currentCount: 0,
-        observation: .duplicate,
-        motion: settled,
-        scrollProgressAfter: end
-      ),
-      1
-    )
-  }
-
-  func testTrackedMovementCannotBeMistakenForNoMovement() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
-    let now = Date()
-
-    XCTAssertEqual(
-      ScrollingCaptureSessionController.resolveAutoScrollAttempt(
-        progress: progress,
-        observation: .duplicate,
-        motion: ViewportMotionMeasurement(
-          hasReference: true,
-          meanAbsoluteDifference: 1,
-          changedPixelFraction: 0.01,
-          isStationary: true
-        ),
-        scrollProgressBefore: AccessibilityScrollProgress(value: 0.20, minimum: 0, maximum: 1),
-        scrollProgressAfter: AccessibilityScrollProgress(value: 0.24, minimum: 0, maximum: 1),
-        now: now,
-        settleDeadline: now
-      ),
-      .progress
-    )
-  }
-
-  func testTrackedLazyLoadingStillClosesGestureAndContinuesScrolling() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
-    let now = Date()
-
-    XCTAssertEqual(
-      ScrollingCaptureSessionController.resolveAutoScrollAttempt(
-        progress: progress,
-        observation: .rejected,
-        motion: ViewportMotionMeasurement(
-          hasReference: true,
-          meanAbsoluteDifference: 9,
-          changedPixelFraction: 0.08,
-          isStationary: false
-        ),
-        scrollProgressBefore: AccessibilityScrollProgress(value: 0.42, minimum: 0, maximum: 1),
-        scrollProgressAfter: AccessibilityScrollProgress(value: 0.42, minimum: 0, maximum: 1),
-        now: now,
-        settleDeadline: now
-      ),
-      .progress
+      ScrollingCaptureSessionController.noProgressVerdict(
+        hasTrackedProgress: true, gesturesWithProgress: 5, retargetCount: 2),
+      .notScrolling
     )
   }
 
   func testScrollProgressNormalizesNonUnitRanges() {
-    let progress = AccessibilityScrollProgress(value: 35, minimum: 10, maximum: 60)
-    XCTAssertEqual(progress.normalizedValue, 0.5, accuracy: 0.0001)
+    let progress = AccessibilityScrollProgress(value: 150, minimum: 100, maximum: 300)
+    XCTAssertEqual(progress.normalizedValue, 0.25, accuracy: 0.000_1)
     XCTAssertFalse(progress.isAtEnd)
-    XCTAssertTrue(AccessibilityScrollProgress(value: 60, minimum: 10, maximum: 60).isAtEnd)
   }
 
-  func testTrackedScrollbarCannotStopEarlyWhileItsProgressIsBelowTheBottom() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
-    progress.finishPendingWithoutProgress()
-    progress.didSendScroll()
-    progress.finishPendingWithoutProgress()
-    XCTAssertTrue(progress.shouldStop)
+  func testMirroredProgressTreatsTopAsEnd() {
+    let top = AccessibilityScrollProgress(value: 0, minimum: 0, maximum: 1)
+    XCTAssertFalse(top.isAtEnd)
+    XCTAssertTrue(top.mirrored.isAtEnd)
+    let nonUnit = AccessibilityScrollProgress(value: 120, minimum: 100, maximum: 300)
+    XCTAssertEqual(nonUnit.mirrored.normalizedValue, 0.9, accuracy: 0.000_1)
+  }
 
+  func testPointerOutsideSelectionIsDetected() {
+    let rect = CGRect(x: 100, y: 100, width: 400, height: 300)
+    XCTAssertTrue(
+      AccessibilityAutoScrollService.pointIsInside(
+        CGPoint(x: 300, y: 250), selectionRect: rect, inset: 4))
     XCTAssertFalse(
-      ScrollingCaptureSessionController.shouldCompleteAfterNoProgress(
-        progress: progress,
-        targetMode: .accessibilityTracked,
-        currentScrollProgress: AccessibilityScrollProgress(value: 0.42, minimum: 0, maximum: 1)
-      )
-    )
-    XCTAssertTrue(
-      ScrollingCaptureSessionController.shouldCompleteAfterNoProgress(
-        progress: progress,
-        targetMode: .accessibilityTracked,
-        currentScrollProgress: AccessibilityScrollProgress(value: 1, minimum: 0, maximum: 1)
-      )
-    )
+      AccessibilityAutoScrollService.pointIsInside(
+        CGPoint(x: 300, y: 420), selectionRect: rect, inset: 4))
+    XCTAssertFalse(
+      AccessibilityAutoScrollService.pointIsInside(
+        CGPoint(x: 101, y: 250), selectionRect: rect, inset: 4))
   }
 
-  func testFallbackModeCanFinishAfterItsFullNoMovementBudget() {
-    var progress = AutoScrollProgressTracker(maximumAttemptsWithoutProgress: 2)
-    progress.didSendScroll()
-    progress.finishPendingWithoutProgress()
-    progress.didSendScroll()
-    progress.finishPendingWithoutProgress()
-
-    XCTAssertTrue(
-      ScrollingCaptureSessionController.shouldCompleteAfterNoProgress(
-        progress: progress,
-        targetMode: .eventFallback,
-        currentScrollProgress: nil
-      )
-    )
+  func testScrollContainerCoveringSelectionBeatsSmallInnerOne() {
+    let selection = CGRect(x: 0, y: 0, width: 600, height: 800)
+    let inner = AccessibilityAutoScrollService.coverageScore(
+      containerFrame: CGRect(x: 50, y: 300, width: 500, height: 120), selectionRect: selection)
+    let outer = AccessibilityAutoScrollService.coverageScore(
+      containerFrame: CGRect(x: 0, y: -40, width: 600, height: 900), selectionRect: selection)
+    XCTAssertLessThan(inner, 0.2)
+    XCTAssertEqual(outer, 1, accuracy: 0.001)
+    XCTAssertEqual(
+      AccessibilityAutoScrollService.coverageScore(containerFrame: nil, selectionRect: selection),
+      0)
   }
 
-  func testStationaryViewportCountsAsNoProgressEvenWhenSeamIsRejected() {
-    let observation = ScrollingCaptureSessionController.autoScrollObservation(
-      stitchDisposition: .rejected,
-      motion: ViewportMotionMeasurement(
-        hasReference: true,
-        meanAbsoluteDifference: 0.8,
-        changedPixelFraction: 0.01,
-        isStationary: true
-      )
-    )
-
-    XCTAssertEqual(observation, .duplicate)
-  }
-
-  func testMovedViewportNeverCountsAsBottomWhenSeamIsNotReady() {
-    let observation = ScrollingCaptureSessionController.autoScrollObservation(
-      stitchDisposition: .duplicate,
-      motion: ViewportMotionMeasurement(
-        hasReference: true,
-        meanAbsoluteDifference: 34,
-        changedPixelFraction: 0.7,
-        isStationary: false
-      )
-    )
-
-    XCTAssertEqual(observation, .rejected)
+  func testOverlongRetinaPartsMergeIntoOneHalfResolutionImage() throws {
+    let parts = [
+      try makeImage(width: 200, height: 300),
+      try makeImage(width: 200, height: 300),
+      try makeImage(width: 200, height: 101),
+    ]
+    let merged = try XCTUnwrap(
+      ScrollingCaptureSessionController.mergedAtHalfResolution(parts, maximumPixelHeight: 400))
+    XCTAssertEqual(merged.width, 100)
+    XCTAssertEqual(merged.height, 350)
+    XCTAssertNil(
+      ScrollingCaptureSessionController.mergedAtHalfResolution(parts, maximumPixelHeight: 300))
   }
 
   func testClosingSeamReviewWindowCancelsCaptureSession() throws {

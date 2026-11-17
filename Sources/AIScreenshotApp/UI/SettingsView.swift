@@ -38,6 +38,7 @@ struct SettingsView: View {
         .frame(width: 780, height: 600)
         .accentColor(TaPalette.cinnabar)
         .tint(TaPalette.cinnabar)
+        .taPaperAppearance()
         .onReceive(NotificationCenter.default.publisher(for: .openAIModelSettings)) { _ in
             withAnimation(.easeOut(duration: 0.16)) { selectedTab = .models }
         }
@@ -184,6 +185,8 @@ private struct GeneralSettingsView: View {
     @AppStorage("resultBarDuration") private var resultBarDuration = 3.0
     @AppStorage("saveHistory") private var saveHistory = false
     @AppStorage("postCaptureAction") private var postCaptureAction = PostCaptureAction.choose.rawValue
+    @AppStorage(RememberedCaptureAction.defaultsKey) private var rememberedAction = ""
+    @AppStorage(ScreenshotBeautifyPreset.defaultsKey) private var beautifyPreset = ScreenshotBeautifyPreset.dusk.id
 
     var body: some View {
         Form {
@@ -197,7 +200,35 @@ private struct GeneralSettingsView: View {
                     Text("打开标注").tag(PostCaptureAction.edit.rawValue)
                     Text("记住上一次操作").tag(PostCaptureAction.rememberLast.rawValue)
                 }
-                Text("这个设置只影响通用截图；极速识别、截图翻译、复制图片和钉图快捷键会直接执行。")
+                Text("这个设置只影响通用截图；极速识别、截图翻译、复制图片和钉图快捷键会直接执行，也不会改变“记住的操作”。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if postCaptureAction != PostCaptureAction.choose.rawValue {
+                    Text("想临时换一个操作：松开鼠标确认选区时按住 ⌥ Option，就会显示操作工具栏。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if postCaptureAction == PostCaptureAction.rememberLast.rawValue {
+                    HStack {
+                        Text(rememberedActionDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("重置记住的操作") {
+                            RememberedCaptureAction.reset()
+                        }
+                        .disabled(rememberedAction.isEmpty)
+                    }
+                }
+            }
+
+            Section("美化") {
+                Picker("背景样式", selection: $beautifyPreset) {
+                    ForEach(ScreenshotBeautifyPreset.all) { preset in
+                        Text(preset.displayName).tag(preset.id)
+                    }
+                }
+                Text("工具栏的“美化”会给截图加上渐变背景、圆角和柔和阴影，并复制到剪贴板。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -213,8 +244,16 @@ private struct GeneralSettingsView: View {
             }
 
             Section("历史与隐私") {
-                Toggle("在本机保存截图历史", isOn: $saveHistory)
-                Text(saveHistory ? "截图只保存在本机；云端调用仍会单独提示。" : "当前不会持久化截图文件。")
+                HStack {
+                    Toggle("在本机保存截图历史", isOn: $saveHistory)
+                    Spacer()
+                    Button("打开历史文件夹") {
+                        CaptureHistoryService().openFolder()
+                    }
+                }
+                Text(saveHistory
+                     ? "每次截图完成后会另存一份 PNG 到“图片/Ta/History”，只保留最新 \(CaptureHistoryService.defaultMaximumFileCount) 张；文件只保存在本机，云端调用仍会单独提示。"
+                     : "当前不会持久化截图文件。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -222,6 +261,13 @@ private struct GeneralSettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(Color.clear)
+    }
+
+    private var rememberedActionDescription: String {
+        guard let action = CaptureQuickAction(rawValue: rememberedAction) else {
+            return "还没有记住任何操作；下一次截图会显示操作工具栏。"
+        }
+        return "当前记住的操作：\(RememberedCaptureAction.displayName(for: action))。重置后下一次截图会重新显示工具栏。"
     }
 }
 

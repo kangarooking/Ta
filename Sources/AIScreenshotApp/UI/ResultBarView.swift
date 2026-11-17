@@ -26,15 +26,26 @@ enum ResultBarKind: Equatable {
     }
 }
 
+/// An optional inline button on the toast, e.g. "取消" while a request is
+/// running or "仍然复制" when the clipboard guard kept a result back.
+struct ResultBarAction {
+    let title: String
+    let handler: @MainActor () -> Void
+}
+
 struct ResultBarState {
     let kind: ResultBarKind
     let title: String
     let detail: String?
+    var action: ResultBarAction? = nil
 }
 
 enum ResultBarLayout {
     static let minimumWidth: CGFloat = 320
     static let maximumWidth: CGFloat = 352
+    /// Toasts that carry an inline action button may grow a little wider so
+    /// the text is not squeezed out.
+    static let maximumWidthWithAction: CGFloat = 440
     static let height: CGFloat = 58
     static let cornerRadius: CGFloat = 18
     static let borderWidth: CGFloat = 0
@@ -50,7 +61,22 @@ enum ResultBarLayout {
         ]).width
         let textWidth = max(titleWidth, detailWidth)
         let fixedControlsAndSpacing: CGFloat = state.kind == .processing ? 116 : 144
-        return min(maximumWidth, max(minimumWidth, ceil(textWidth + fixedControlsAndSpacing)))
+        guard let action = state.action else {
+            return min(maximumWidth, max(minimumWidth, ceil(textWidth + fixedControlsAndSpacing)))
+        }
+        let actionWidth = actionButtonWidth(for: action.title) + 10
+        return min(
+            maximumWidthWithAction,
+            max(minimumWidth, ceil(textWidth + fixedControlsAndSpacing + actionWidth))
+        )
+    }
+
+    @MainActor
+    static func actionButtonWidth(for title: String) -> CGFloat {
+        let titleWidth = (title as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold)
+        ]).width
+        return ceil(titleWidth) + 20
     }
 }
 
@@ -91,6 +117,22 @@ struct ResultBarView: View {
                 }
                 .accessibilityLabel("拓")
 
+            if let action = state.action {
+                Button(action: { action.handler() }) {
+                    Text(action.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(TaPalette.cinnabar)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .frame(width: ResultBarLayout.actionButtonWidth(for: action.title), height: 24)
+                        .background(TaPalette.cinnabar.opacity(0.10), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(action.title)
+                .accessibilityIdentifier("result-bar-action")
+            }
+
             if state.kind != .processing {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
@@ -106,5 +148,6 @@ struct ResultBarView: View {
         .padding(.horizontal, 14)
         .frame(width: ResultBarLayout.preferredWidth(for: state), height: ResultBarLayout.height)
         .background(TaPalette.paper, in: RoundedRectangle(cornerRadius: ResultBarLayout.cornerRadius, style: .continuous))
+        .environment(\.colorScheme, .light)
     }
 }

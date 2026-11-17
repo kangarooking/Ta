@@ -85,14 +85,20 @@ ta capture frontmost --json
 ta window list --app Safari --json
 ta capture window --window-id 1234 --json
 
+# 一步截取某个 App 的窗口，并把长边限制在 1568 像素以内
+ta capture app "Safari" --max-size 1568 --json
+
 # 使用最近截图执行本地 OCR
 ta ocr last --json
 
+# OCR 并返回每行文字的像素边框
+ta ocr last --boxes --json
+
 # AI 识图；会遵循拓中的云端策略
-ta analyze last --task general --cloud auto --json
+ta analyze last --task general --json
 
 # 文字翻译
-ta translate text --text "Hello from Ta" --cloud auto --json
+ta translate text --text "Hello from Ta" --json
 
 # 保存最近图片到明确的绝对路径
 ta save last --output "$PWD/ta-capture.png" --json
@@ -170,7 +176,9 @@ dsh --profile web --dump-config
     allowClipboard: false
 ```
 
-未填写的字段会使用插件默认值：`/Applications/拓.app`、当前用户的 Ta Socket、15 秒超时和自动后台启动。`allowClipboard` 默认是 `false`，只有明确需要 Agent 改写剪贴板时才开启。
+`defaultCloud` 默认是 `inherit`：插件不发送 `cloud` 参数，直接使用用户在拓里设置的云端策略。显式填写 `auto`、`allow`、`deny` 只能让请求比拓的设置更严格，无法放宽——用户在拓中选择“始终禁止上传”后，任何调用方参数都不能绕过。
+
+未填写的字段会使用插件默认值：`/Applications/拓.app`、当前用户的 Ta Socket、15 秒超时（OCR、识图、翻译这类可能上云的调用至少等待 180 秒）和自动后台启动。超时后插件不会自动重发请求，因为拓可能仍在执行。`allowClipboard` 默认是 `false`，只有明确需要 Agent 改写剪贴板时才开启。
 
 卸载：
 
@@ -183,13 +191,13 @@ dsh plugin --profile web remove dsh-ta
 “设置 → Agent”提供：
 
 - Agent 总开关和无感自动截图开关；
-- `auto`、`allow`、`deny` 三种默认云端策略；
-- 按 Bundle ID 配置的隐私 App 黑名单；
+- `auto`、`allow`、`deny` 三种云端策略。这是上限：调用方的 `cloud` 参数只能更严格（例如 `cloud=deny`），不能放宽；选择“始终禁止上传”后所有需要上云的调用都会返回 `CLOUD_UPLOAD_NOT_ALLOWED`；
+- 按 Bundle ID 配置的隐私 App 黑名单。从未修改过时默认屏蔽常见密码管理器（1Password、Bitwarden、钥匙串访问、密码 App、LastPass、Dashlane、KeePassXC、Enpass 等），可在设置中编辑或恢复默认；
 - 是否允许截取拓自身；
-- 临时截图缓存清理；
-- 最近 100 次调用的本地审计。
+- 临时截图缓存清理：Bridge 启动时以及生成新截图时（最多每 10 分钟一次）自动删除超过 24 小时的缓存，也可手动立即清理；
+- 最近 2000 次调用的本地审计（状态、能力、权限这类只读探测不计入，避免挤掉截图记录）。
 
-设置修改会从下一次请求开始生效，不需要重启 Bridge。审计只保存调用时间、调用方、方法、成功状态、耗时、错误码和是否上云；不保存请求参数、API Key、OCR/翻译正文或图片数据。调用记录权限为当前用户可读写。
+设置修改会从下一次请求开始生效，不需要重启 Bridge。审计只保存调用时间、调用方、方法、成功状态、耗时、错误码、是否上云、截图目标（类型与 App 名称 / Bundle ID，不含窗口标题）以及 `deliver.save` 的保存路径；不保存其他请求参数、API Key、OCR/翻译正文或图片数据。只要图片或文字已经交给云端模型，即使该次调用随后失败，“是否上云”也会记为是。调用记录权限为当前用户可读写；日志文件损坏时会被改名为 `audit-v1.json.corrupt` 并重新开始记录。
 
 ## 6. Bridge v1 能力与限制
 
@@ -197,10 +205,24 @@ dsh plugin --profile web remove dsh-ta
 
 - 状态、能力和权限检查；
 - 显示器与窗口发现；
-- 显示器、前台窗口、指定窗口和已知坐标区域截图；
-- OCR、AI 识图、文字翻译和图片翻译；
+- 显示器、前台窗口、指定窗口和已知坐标区域截图；可按 App 名称或窗口标题片段一步截图（`ta capture app "Safari"`），可用 `--max-size <像素>`（参数 `maxDimension`）限制输出长边，响应的 `data.image` 给出输出像素尺寸、原始尺寸和 `pixelsPerPoint`；
+- OCR（`--boxes` / `boxes` 返回每行文字的像素边框）、AI 识图、文字翻译和图片翻译；
 - JSON Recipe v1 标注变换、稳定 ID 擦除以及 100 步撤销/重做；
 - 复制与保存。
+
+文件安全限制：
+
+- `deliver.save`（`ta save`、`--output`）只写 PNG：没有扩展名时自动补 `.png`，其他扩展名被拒绝；拒绝隐藏文件/目录（以 `.` 开头）、`~/Library`（拓自己的 Agent 缓存目录除外）和系统目录；目标已存在时默认拒绝，需要显式传 `overwrite: true`（CLI `--overwrite`）。
+- 图片输入（`inputPath`）只接受普通图片文件：png、jpg、jpeg、tiff、heic、webp、gif、bmp。
+- 标注配方的尺寸有上限（例如模糊半径 ≤ 256、马赛克块 ≤ 512、线宽与字号 ≤ 2000、坐标绝对值 ≤ 1000000），超出时返回 `INVALID_REQUEST`。
+- 以上违规统一返回 `INVALID_REQUEST`。
+
+超时与重试：
+
+- CLI 默认超时按命令区分：状态/列表 10 秒，截图/标注/保存 30 秒，OCR/识图/翻译 180 秒（`ocr --cloud deny` 为 60 秒）；可用 `--timeout <秒>` 覆盖。
+- 客户端等待超时返回独立错误码 `REQUEST_TIMEOUT`（退出码 8，`retryable: false`）：请求可能仍在拓中执行，内容也可能已经上云，**不要自动重试**。
+- 使用 `--json` 时，包括启动失败、超时在内的所有错误都以 JSON 信封输出到 stderr。
+- Bridge 对已接受的连接设置了接收超时（10 秒内必须发完请求），空闲连接会被关闭，不会拖住 App。
 
 标注变换支持裁剪、矩形、圆形、箭头、画笔、高亮、文字、编号、矩形/笔刷马赛克、模糊、按 ID 擦除和放大镜。它使用左上角像素坐标、只在本机渲染，每次成功调用都会返回新的 PNG Artifact。
 
@@ -211,13 +233,17 @@ dsh plugin --profile web remove dsh-ta
 | 错误 | 处理方法 |
 |------|----------|
 | `TA_APP_NOT_INSTALLED` | 确认 `/Applications/拓.app` 已安装 |
-| `BRIDGE_UNAVAILABLE` | 启动拓后重试一次，不要无限重试 |
+| `BRIDGE_UNAVAILABLE` | 启动拓后重试一次，不要无限重试；`retryable` 为 `false` 时说明连接在请求发出后中断，先确认结果 |
+| `REQUEST_TIMEOUT` | 客户端等待超时，请求可能仍在执行；不要自动重试，确认结果后再用更大的 `--timeout` 重新发起 |
+| `INVALID_REQUEST` | 参数、路径或标注配方不合法；按 `message` 修正后再调用 |
+| `INTERNAL_ERROR` | 拓内部或模型服务出错；把 `message` 告诉用户，不要循环重试 |
 | `SCREEN_PERMISSION_REQUIRED` | 在“设置 → 权限”开启屏幕录制 |
 | `TARGET_NOT_FOUND` | 重新运行 `ta window list --json` |
 | `TARGET_BLOCKED_BY_PRIVACY_POLICY` | 检查 Agent 总开关和隐私 App 黑名单 |
-| `CLOUD_UPLOAD_NOT_ALLOWED` | 使用本地 OCR，或在获得许可后调整云端策略 |
+| `CLOUD_UPLOAD_NOT_ALLOWED` | 使用本地 OCR；如需云端能力，由用户在拓的设置里调整云端策略（调用方参数无法放宽） |
 | `MODEL_PROFILE_NOT_CONFIGURED` | 在拓中配置对应视觉或翻译模型 |
-| `ARTIFACT_EXPIRED` | 重新截图；需要长期保留时使用 `ta save` |
+
+临时截图超过 24 小时会被清理。此时再引用旧路径会得到 `INVALID_REQUEST`（找不到图片文件）：重新截图即可；需要长期保留时使用 `ta save`。
 
 ## 8. 从源码生成发布包
 

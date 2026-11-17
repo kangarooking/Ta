@@ -85,6 +85,7 @@ final class SelectionOverlayController {
         context: SelectionOverlayStartContext,
         frozenDisplayImage: CGImage?,
         showsActionToolbar: Bool,
+        optionRevealsActionToolbar: Bool = false,
         presetRect: CGRect? = nil,
         completion: @escaping (CaptureSelection?, CaptureQuickAction?) -> Void
     ) {
@@ -100,6 +101,7 @@ final class SelectionOverlayController {
             snapTargets: context.snapTargets,
             frozenDisplayImage: frozenDisplayImage,
             showsActionToolbar: showsActionToolbar,
+            optionRevealsActionToolbar: optionRevealsActionToolbar,
             presetRect: presetRect,
             completion: completion
         )
@@ -112,6 +114,7 @@ final class SelectionOverlayController {
         snapTargets: [WindowSnapTarget],
         frozenDisplayImage: CGImage?,
         showsActionToolbar: Bool,
+        optionRevealsActionToolbar: Bool,
         presetRect: CGRect?,
         completion: @escaping (CaptureSelection?, CaptureQuickAction?) -> Void
     ) {
@@ -136,6 +139,7 @@ final class SelectionOverlayController {
 
         let overlay = SelectionOverlayView(frame: CGRect(origin: .zero, size: screen.frame.size))
         overlay.showsActionToolbar = showsActionToolbar
+        overlay.optionRevealsActionToolbar = optionRevealsActionToolbar
         overlay.setFrozenDisplayImage(frozenDisplayImage)
         overlay.onFinish = { [weak self, weak panel, weak overlay] localRect, action in
             guard let self, let panel else { return }

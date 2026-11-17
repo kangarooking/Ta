@@ -51,6 +51,169 @@ final class OptionalOCRPackManagerTests: XCTestCase {
         try manager.remove(.paddleOCR)
     }
 
+    func testWorkerLineBoxesBecomeVisionStyleLayout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let pack = try fixture.makeWorkerPack(reportsLines: true)
+        let manager = fixture.manager()
+        _ = try manager.installDirectory(pack, expectedEngine: .paddleOCR)
+
+        let result = try await manager.recognize(
+            image: try makeImage(width: 200, height: 100),
+            engine: .paddleOCR
+        )
+
+        XCTAssertEqual(result.engine, .paddleOCR)
+        XCTAssertEqual(result.text, "Top line\nBottom line")
+        let lines = result.document.blocks.flatMap(\.lines)
+        XCTAssertEqual(lines.map(\.text), ["Top line", "Bottom line"])
+        // Pixel box [20, 10, 120, 30] in a 200x100 image, flipped to a bottom-left origin.
+        let box = try XCTUnwrap(lines.first?.boundingBox)
+        XCTAssertEqual(box.minX, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(box.minY, 0.7, accuracy: 0.0001)
+        XCTAssertEqual(box.width, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(box.height, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(lines.first?.confidence ?? 0, 0.9, accuracy: 0.0001)
+        try manager.remove(.paddleOCR)
+    }
+
+    func testResponseWithoutUsableBoxesFallsBackToPlainText() {
+        let partial = OCRPackResponse(
+            text: "a\nb",
+            confidence: 0.8,
+            lines: [
+                OCRPackLine(text: "a", confidence: 0.9, box: [0, 0, 10, 10]),
+                OCRPackLine(text: "b", confidence: 0.7, box: nil)
+            ]
+        )
+        XCTAssertNil(partial.textLines(imageWidth: 100, imageHeight: 100))
+        let result = OptionalOCRPackManager.makeResult(
+            from: partial,
+            imageWidth: 100,
+            imageHeight: 100,
+            engine: .paddleOCR
+        )
+        XCTAssertEqual(result.text, "a\nb")
+        XCTAssertTrue(result.document.blocks.isEmpty)
+
+        let legacy = try? JSONDecoder().decode(
+            OCRPackResponse.self,
+            from: Data(#"{"text":"old pack","confidence":0.9}"#.utf8)
+        )
+        XCTAssertEqual(legacy?.text, "old pack")
+        XCTAssertNil(legacy?.lines)
+    }
+
+    func testArchiveSymlinkValidation() throws {
+        let listing = """
+        Archive:  pack.zip
+        Zip file size: 755 bytes, number of entries: 4
+        drwxr-xr-x  3.0 unx        0 bx stor 26-Nov-17 16:25 pack/
+        lrwxr-xr-x  3.0 unx        4 bx stor 26-Nov-17 16:25 pack/my link
+        -rw-r--r--  3.0 unx        3 tx stor 26-Nov-17 16:25 pack/sub/a file.txt
+        4 files, 21 bytes uncompressed, 21 bytes compressed:  0.0%
+        """
+        let symlinks = OptionalOCRPackManager.archiveSymlinkPaths(inDetailedListing: listing)
+        XCTAssertEqual(symlinks, ["pack/my link"])
+        XCTAssertFalse(OptionalOCRPackManager.archiveWritesThroughSymlink(
+            symlinks: symlinks,
+            entries: ["pack/", "pack/my link", "pack/sub/a file.txt"]
+        ))
+        XCTAssertTrue(OptionalOCRPackManager.archiveWritesThroughSymlink(
+            symlinks: symlinks,
+            entries: ["pack/", "pack/my link", "pack/my link/evil.sh"]
+        ))
+        XCTAssertFalse(OptionalOCRPackManager.isSafeArchivePath("../outside"))
+        XCTAssertFalse(OptionalOCRPackManager.isSafeArchivePath("/etc/passwd"))
+        XCTAssertTrue(OptionalOCRPackManager.isSafeArchivePath("pack/bin/adapter"))
+    }
+
+    func testExtractedSymlinksMustStayInsideThePack() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let manager = fixture.manager()
+        let inside = fixture.root.appendingPathComponent("extracted-inside", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: inside.appendingPathComponent("bin", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(
+            atPath: inside.appendingPathComponent("bin/python3.12").path,
+            contents: Data()
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: inside.appendingPathComponent("bin/python3").path,
+            withDestinationPath: "python3.12"
+        )
+        XCTAssertNoThrow(try manager.validateExtractedSymlinks(in: inside))
+
+        for target in ["/etc", "../../outside"] {
+            let escaping = fixture.root.appendingPathComponent("extracted-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: escaping, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(
+                atPath: escaping.appendingPathComponent("link").path,
+                withDestinationPath: target
+            )
+            XCTAssertThrowsError(try manager.validateExtractedSymlinks(in: escaping)) { error in
+                guard case OptionalOCRPackError.unsafeArchive = error else {
+                    return XCTFail("Unexpected error: \(error)")
+                }
+            }
+        }
+    }
+
+    func testOneClickInstallRejectsArchiveWithEscapingSymlink() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let pack = try fixture.makePack(engine: .paddleOCR)
+        try FileManager.default.createSymbolicLink(
+            atPath: pack.appendingPathComponent("escape").path,
+            withDestinationPath: "/etc"
+        )
+        try fixture.makeCatalogArchive(pack: pack)
+
+        do {
+            _ = try await fixture.manager().installRecommended(for: .paddleOCR) { _ in }
+            XCTFail("Expected unsafe archive rejection")
+        } catch OptionalOCRPackError.unsafeArchive {
+            XCTAssertFalse(fixture.manager().isInstalled(.paddleOCR))
+        }
+    }
+
+    func testCancellingRecognitionStopsWaitingForHungWorker() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let pack = try fixture.makeWorkerPack(hangsOnRecognize: true)
+        let manager = fixture.manager()
+        _ = try manager.installDirectory(pack, expectedEngine: .paddleOCR)
+        let image = try makeImage(width: 64, height: 32)
+        let recognition = Task {
+            try await manager.recognize(image: image, engine: .paddleOCR)
+        }
+        try await Task.sleep(for: .seconds(2))
+
+        let cancellationStarted = Date()
+        recognition.cancel()
+        do {
+            _ = try await recognition.value
+            XCTFail("Cancelled recognition unexpectedly completed")
+        } catch is CancellationError {
+            XCTAssertLessThan(Date().timeIntervalSince(cancellationStarted), 5)
+        }
+        try manager.remove(.paddleOCR)
+    }
+
+    func testImportDirectoryInBackgroundInstallsPack() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let pack = try fixture.makePack(engine: .paddleOCR)
+
+        let info = try await fixture.manager().importDirectoryInBackground(pack, expectedEngine: .paddleOCR)
+
+        XCTAssertEqual(info.version, "1.0.0")
+        XCTAssertTrue(fixture.manager().isInstalled(.paddleOCR))
+    }
+
     func testInstallsValidatedDirectoryAndRemovesIt() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -276,16 +439,21 @@ private struct Fixture {
         return pack
     }
 
-    func makeWorkerPack() throws -> URL {
+    func makeWorkerPack(reportsLines: Bool = false, hangsOnRecognize: Bool = false) throws -> URL {
         let pack = root.appendingPathComponent("worker-source-\(UUID().uuidString)", isDirectory: true)
         let bin = pack.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let adapter = bin.appendingPathComponent("adapter")
-        let script = #"""
+        let script = """
         #!/usr/bin/python3
+        REPORTS_LINES = \(reportsLines ? "True" : "False")
+        HANGS_ON_RECOGNIZE = \(hangsOnRecognize ? "True" : "False")
+
+        """ + #"""
         import json
         import struct
         import sys
+        import time
 
         if "--health-check" in sys.argv:
             print(json.dumps({"ok": True, "engine": "paddleOCR", "packVersion": "1.1.0", "architecture": "arm64", "offline": True}))
@@ -302,9 +470,23 @@ private struct Fixture {
                 print(json.dumps({"id": request.get("id"), "ok": True, "event": "stopping"}), flush=True)
                 break
             count += 1
+            if HANGS_ON_RECOGNIZE:
+                time.sleep(600)
             with open(request["input"], "rb") as image:
                 header = image.read(24)
             width, height = struct.unpack(">II", header[16:24])
+            if REPORTS_LINES:
+                print(json.dumps({
+                    "id": request.get("id"),
+                    "ok": True,
+                    "text": "Top line\nBottom line",
+                    "confidence": 0.85,
+                    "lines": [
+                        {"text": "Top line", "confidence": 0.9, "box": [20, 10, 120, 30]},
+                        {"text": "Bottom line", "confidence": None, "box": [20, 60, 150, 80]},
+                    ],
+                }), flush=True)
+                continue
             print(json.dumps({
                 "id": request.get("id"),
                 "ok": True,

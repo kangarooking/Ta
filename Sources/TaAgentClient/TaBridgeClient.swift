@@ -6,9 +6,14 @@ public enum TaBridgeClientError: Error, Equatable, LocalizedError, Sendable {
     case socketPathTooLong(String)
     case socketFailure(operation: String, code: Int32)
     case connectionClosed
+    /// A socket read or write hit its timeout. When this happens after the
+    /// request was written, Ta may still be executing it.
+    case timedOut(operation: String)
 
     public var errorDescription: String? {
         switch self {
+        case .timedOut(let operation):
+            "Bridge \(operation) 超时。"
         case .socketPathTooLong(let path):
             "Unix Socket 路径过长：\(path)"
         case .socketFailure(let operation, let code):
@@ -35,10 +40,41 @@ public enum TaUnixSocketIO {
         return address
     }
 
-    public static func readPayload(fileDescriptor: Int32) throws -> Data {
-        let header = try readExactly(fileDescriptor: fileDescriptor, count: AgentFrameCodec.headerBytes)
+    /// Reads one length-prefixed frame. `deadline` bounds the whole frame, so a
+    /// peer that trickles bytes cannot hold the reader forever; the per-`recv`
+    /// bound comes from the socket's `SO_RCVTIMEO` (see `setTimeouts`).
+    public static func readPayload(fileDescriptor: Int32, deadline: Date? = nil) throws -> Data {
+        let header = try readExactly(
+            fileDescriptor: fileDescriptor,
+            count: AgentFrameCodec.headerBytes,
+            deadline: deadline
+        )
         let length = try AgentFrameCodec.payloadLength(from: header)
-        return try readExactly(fileDescriptor: fileDescriptor, count: length)
+        return try readExactly(fileDescriptor: fileDescriptor, count: length, deadline: deadline)
+    }
+
+    /// Applies receive/send timeouts to a socket. Non-positive values leave the
+    /// corresponding direction blocking.
+    public static func setTimeouts(
+        fileDescriptor: Int32,
+        receive: TimeInterval,
+        send: TimeInterval
+    ) {
+        for (option, interval) in [(SO_RCVTIMEO, receive), (SO_SNDTIMEO, send)] where interval > 0 {
+            // Clamp so the integer conversions below can never trap.
+            let bounded = min(interval, 86_400)
+            let seconds = floor(bounded)
+            var value = timeval(
+                tv_sec: Int(seconds),
+                tv_usec: Int32((bounded - seconds) * 1_000_000)
+            )
+            withUnsafePointer(to: &value) { pointer in
+                _ = Darwin.setsockopt(
+                    fileDescriptor, SOL_SOCKET, option,
+                    pointer, socklen_t(MemoryLayout<timeval>.size)
+                )
+            }
+        }
     }
 
     public static func writePayload(_ payload: Data, fileDescriptor: Int32) throws {
@@ -46,11 +82,18 @@ public enum TaUnixSocketIO {
         try writeAll(frame, fileDescriptor: fileDescriptor)
     }
 
-    private static func readExactly(fileDescriptor: Int32, count: Int) throws -> Data {
+    private static func readExactly(
+        fileDescriptor: Int32,
+        count: Int,
+        deadline: Date? = nil
+    ) throws -> Data {
         if count == 0 { return Data() }
         var result = Data(count: count)
         var offset = 0
         while offset < count {
+            if let deadline, Date() >= deadline {
+                throw TaBridgeClientError.timedOut(operation: "read")
+            }
             let received = result.withUnsafeMutableBytes { buffer -> Int in
                 guard let base = buffer.baseAddress else { return -1 }
                 return Darwin.recv(fileDescriptor, base.advanced(by: offset), count - offset, 0)
@@ -59,8 +102,13 @@ public enum TaUnixSocketIO {
                 offset += received
             } else if received == 0 {
                 throw TaBridgeClientError.connectionClosed
-            } else if errno != EINTR {
-                throw TaBridgeClientError.socketFailure(operation: "read", code: errno)
+            } else {
+                let code = errno
+                if code == EINTR { continue }
+                if code == EAGAIN {  // EWOULDBLOCK is the same value on Darwin
+                    throw TaBridgeClientError.timedOut(operation: "read")
+                }
+                throw TaBridgeClientError.socketFailure(operation: "read", code: code)
             }
         }
         return result
@@ -77,8 +125,13 @@ public enum TaUnixSocketIO {
                 offset += sent
             } else if sent == 0 {
                 throw TaBridgeClientError.connectionClosed
-            } else if errno != EINTR {
-                throw TaBridgeClientError.socketFailure(operation: "write", code: errno)
+            } else {
+                let code = errno
+                if code == EINTR { continue }
+                if code == EAGAIN {  // EWOULDBLOCK is the same value on Darwin
+                    throw TaBridgeClientError.timedOut(operation: "write")
+                }
+                throw TaBridgeClientError.socketFailure(operation: "write", code: code)
             }
         }
     }
@@ -161,22 +214,7 @@ public struct TaBridgeClient: Sendable {
     }
 
     private func configureTimeout(_ descriptor: Int32) {
-        guard timeout > 0 else { return }
-        let seconds = floor(timeout)
-        var value = timeval(
-            tv_sec: Int(seconds),
-            tv_usec: Int32((timeout - seconds) * 1_000_000)
-        )
-        withUnsafePointer(to: &value) { pointer in
-            _ = Darwin.setsockopt(
-                descriptor, SOL_SOCKET, SO_RCVTIMEO,
-                pointer, socklen_t(MemoryLayout<timeval>.size)
-            )
-            _ = Darwin.setsockopt(
-                descriptor, SOL_SOCKET, SO_SNDTIMEO,
-                pointer, socklen_t(MemoryLayout<timeval>.size)
-            )
-        }
+        TaUnixSocketIO.setTimeouts(fileDescriptor: descriptor, receive: timeout, send: timeout)
     }
 }
 

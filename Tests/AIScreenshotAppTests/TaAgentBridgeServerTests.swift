@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import AIScreenshotApp
@@ -98,6 +99,75 @@ struct TaAgentBridgeServerTests {
         }
     }
 
+    @Test("idle connections are dropped after the receive timeout and never starve real requests")
+    func idleConnectionsDoNotStarveServer() async throws {
+        let fixture = try makeFixture(receiveTimeout: 0.3)
+        defer { fixture.server.stop() }
+
+        // Open many connections that never send a byte (like `nc -U`).
+        var idle: [Int32] = []
+        defer { idle.forEach { _ = Darwin.close($0) } }
+        for _ in 0..<24 {
+            idle.append(try connectRaw(to: fixture.server.socketURL))
+        }
+
+        // Real requests are still served while the idle connections are open.
+        let response = try await fixture.client.send(
+            AgentRequestEnvelope(
+                requestID: "while-idle",
+                method: .systemStatus,
+                client: AgentClientInfo(name: "test", version: "1")
+            )
+        )
+        #expect(response.ok)
+
+        // The server closes each idle connection once the receive timeout passes:
+        // a blocking read then sees end-of-file instead of hanging.
+        let first = try #require(idle.first)
+        TaUnixSocketIO.setTimeouts(fileDescriptor: first, receive: 5, send: 5)
+        #expect(throws: TaBridgeClientError.connectionClosed) {
+            _ = try TaUnixSocketIO.readPayload(fileDescriptor: first)
+        }
+    }
+
+    @Test("the server keeps accepting after clients abort their connections")
+    func acceptLoopSurvivesAbortedClients() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.server.stop() }
+
+        for _ in 0..<16 {
+            Darwin.close(try connectRaw(to: fixture.server.socketURL))
+        }
+        let response = try await fixture.client.send(
+            AgentRequestEnvelope(
+                requestID: "after-aborts",
+                method: .systemStatus,
+                client: AgentClientInfo(name: "test", version: "1")
+            )
+        )
+
+        #expect(response.ok)
+    }
+
+    private func connectRaw(to socketURL: URL) throws -> Int32 {
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw TaBridgeClientError.socketFailure(operation: "socket", code: errno)
+        }
+        var address = try TaUnixSocketIO.makeAddress(path: socketURL.path)
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard result == 0 else {
+            let code = errno
+            Darwin.close(descriptor)
+            throw TaBridgeClientError.socketFailure(operation: "connect", code: code)
+        }
+        return descriptor
+    }
+
     @Test("socket is private to the current user")
     func socketPermissions() throws {
         let fixture = try makeFixture()
@@ -109,6 +179,7 @@ struct TaAgentBridgeServerTests {
     }
 
     private func makeFixture(
+        receiveTimeout: TimeInterval = TaAgentBridgeConnection.defaultReceiveTimeout,
         handler: @escaping TaAgentRequestRouter.Handler = { request in
             .success(
                 requestID: request.requestID,
@@ -119,7 +190,7 @@ struct TaAgentBridgeServerTests {
         let name = "ta-agent-\(UUID().uuidString.prefix(8)).sock"
         let socketURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         let router = TaAgentRequestRouter(handler: handler)
-        let server = TaAgentBridgeServer(socketURL: socketURL, router: router)
+        let server = TaAgentBridgeServer(socketURL: socketURL, router: router, receiveTimeout: receiveTimeout)
         try server.start()
         return (server, TaBridgeClient(socketURL: socketURL, timeout: 2))
     }

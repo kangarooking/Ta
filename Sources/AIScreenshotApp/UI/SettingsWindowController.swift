@@ -20,6 +20,7 @@ final class SettingsWindowController {
             newWindow.isMovableByWindowBackground = true
             newWindow.minSize = NSSize(width: 740, height: 560)
             newWindow.isReleasedWhenClosed = false
+            newWindow.appearance = NSAppearance(named: .aqua)
             newWindow.contentView = NSHostingView(
                 rootView: SettingsView()
                     .accentColor(TaPalette.cinnabar)

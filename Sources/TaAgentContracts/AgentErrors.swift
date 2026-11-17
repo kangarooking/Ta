@@ -17,6 +17,9 @@ public enum AgentErrorCode: String, Codable, CaseIterable, Sendable {
     case userActivityDetected = "USER_ACTIVITY_DETECTED"
     case artifactExpired = "ARTIFACT_EXPIRED"
     case cancelled = "CANCELLED"
+    /// Client-side only: the caller stopped waiting, but Ta may still be executing
+    /// the request. Never retry automatically (a cloud upload could run twice).
+    case requestTimeout = "REQUEST_TIMEOUT"
     case internalError = "INTERNAL_ERROR"
 }
 

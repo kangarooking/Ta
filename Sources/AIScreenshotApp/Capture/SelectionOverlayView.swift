@@ -214,6 +214,9 @@ final class CaptureActionButton: NSButton {
 final class SelectionOverlayView: NSView {
     var onFinish: ((CGRect?, CaptureQuickAction?) -> Void)?
     var showsActionToolbar = false
+    /// When a default / remembered action would run immediately, holding
+    /// Option while confirming the selection shows the action toolbar instead.
+    var optionRevealsActionToolbar = false
 
     private var dragStart: CGPoint?
     private var dragMode: SelectionDragMode = .creating
@@ -315,6 +318,10 @@ final class SelectionOverlayView: NSView {
             NSCursor.closedHand.set()
         } else {
             dragMode = .creating
+            // Hover tracking pauses while a selection exists, so resolve the
+            // window under the pointer now instead of reusing a stale target
+            // (otherwise clicking window B re-selected window A).
+            hoveredSnapTarget = WindowSnapTargetSelector.target(at: point, from: snapTargets)
             pendingSnapRect = hoveredSnapTarget?.frame
             selectionRect = pendingSnapRect
             NSCursor.crosshair.set()
@@ -374,6 +381,11 @@ final class SelectionOverlayView: NSView {
             didDrag = false
             invalidateCursorRects()
             needsDisplay = true
+            if !showsActionToolbar,
+               optionRevealsActionToolbar,
+               event.modifierFlags.contains(.option) {
+                showsActionToolbar = true
+            }
             if showsActionToolbar {
                 showActionToolbar(for: rect.integral)
             } else {
@@ -449,7 +461,12 @@ final class SelectionOverlayView: NSView {
         context.fill(bounds)
 
         guard let displayRect = selectionRect ?? hoveredSnapTarget?.frame else {
-            drawHint("拖动选择区域 · 右键 / Esc 取消", at: CGPoint(x: bounds.midX, y: bounds.midY))
+            drawHint(
+                optionRevealsActionToolbar && !showsActionToolbar
+                    ? "拖动选择区域 · 按住 ⌥ 松开可选择其他操作 · 右键 / Esc 取消"
+                    : "拖动选择区域 · 右键 / Esc 取消",
+                at: CGPoint(x: bounds.midX, y: bounds.midY)
+            )
             return
         }
 

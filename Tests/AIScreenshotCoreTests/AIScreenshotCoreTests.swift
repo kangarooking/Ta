@@ -104,6 +104,62 @@ final class AIScreenshotCoreTests: XCTestCase {
         let validator = ProviderEndpointValidator()
         XCTAssertNil(validator.validationMessage(for: "http://localhost:11434/v1"))
         XCTAssertNil(validator.validationMessage(for: "http://127.0.0.1:11434/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://127.8.9.10:8000/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://[::1]:8000/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://10.0.0.12:8000/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://172.16.4.2:8000/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://172.31.255.1:8000/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://192.168.1.20:1234/v1"))
+        XCTAssertNil(validator.validationMessage(for: "http://studio.local:1234/v1"))
+    }
+
+    func testProviderEndpointStillRejectsPublicHTTPLookalikes() {
+        let validator = ProviderEndpointValidator()
+        for endpoint in [
+            "http://172.32.0.1/v1",
+            "http://11.0.0.1/v1",
+            "http://192.169.1.1/v1",
+            "http://10.evil.example.com/v1",
+            "http://127.0.0.1.evil.example.com/v1",
+            "http://localhost.evil.example.com/v1",
+            "http://notlocal/v1"
+        ] {
+            XCTAssertEqual(validator.validationMessage(for: endpoint), "远程服务必须使用 HTTPS", endpoint)
+        }
+        XCTAssertTrue(validator.isLocalEndpoint("http://192.168.0.2:11434"))
+        XCTAssertTrue(validator.isLocalEndpoint("https://localhost:8443/v1"))
+        XCTAssertFalse(validator.isLocalEndpoint("https://api.example.com/v1"))
+    }
+
+    func testClassifierKeepsEnglishProseWithKeywordsAsPlainText() {
+        let prose = """
+        This guide is for users migrating from the old dashboard. Please return the form to the
+        public office if you need a new type of account, or import your data while it is still available.
+        """
+        XCTAssertEqual(ContentClassifier().classify(prose), .plainText)
+        XCTAssertEqual(
+            ContentClassifier().classify("Thanks for the update; we will let the class know from Monday."),
+            .plainText
+        )
+    }
+
+    func testClassifierRecognizesPythonAndMarkupAsCode() {
+        XCTAssertEqual(ContentClassifier().classify("def area(r):\n    return 3.14 * r * r"), .code)
+        XCTAssertEqual(
+            ContentClassifier().classify("const total = items.length;\nif (total == 0) {\n  console.log(total);\n}"),
+            .code
+        )
+    }
+
+    func testClassifierDoesNotTreatUnitsOrSingleSymbolsAsFormula() {
+        XCTAssertEqual(ContentClassifier().classify("The flat is 85 m² and close to the station."), .plainText)
+        XCTAssertEqual(ContentClassifier().classify("温度 ≥ 30°C 时请开启空调"), .plainText)
+        XCTAssertEqual(ContentClassifier().classify("面积 20 m²，温度 ≥ 30°C"), .plainText)
+    }
+
+    func testClassifierStillRecognizesUnicodeEquations() {
+        XCTAssertEqual(ContentClassifier().classify("x² + y² = r²"), .formula)
+        XCTAssertEqual(ContentClassifier().classify("√2 ≈ 1.414"), .formula)
     }
 
     func testVisionOCRRecognizesGeneratedEnglishText() async throws {

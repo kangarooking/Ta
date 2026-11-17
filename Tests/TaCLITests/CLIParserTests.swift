@@ -108,6 +108,84 @@ struct CLIParserTests {
         ))
     }
 
+    @Test("cloud-capable commands get a long default timeout; explicit --timeout wins")
+    func defaultTimeouts() throws {
+        #expect(try CLIParser.parse(["status"]).timeout == 10)
+        #expect(try CLIParser.parse(["window", "list"]).timeout == 10)
+        #expect(try CLIParser.parse(["capture", "frontmost"]).timeout == 30)
+        #expect(try CLIParser.parse(["analyze", "last"]).timeout == 180)
+        #expect(try CLIParser.parse(["translate", "last", "--mode", "image"]).timeout == 180)
+        #expect(try CLIParser.parse(["translate", "last"]).timeout == 180)
+        #expect(try CLIParser.parse(["translate", "text", "--text", "hi"]).timeout == 180)
+        #expect(try CLIParser.parse(["ocr", "last"]).timeout == 180)
+        #expect(try CLIParser.parse(["ocr", "last", "--cloud", "deny"]).timeout == 60)
+        #expect(try CLIParser.parse(["analyze", "last", "--timeout", "7.5"]).timeout == 7.5)
+        #expect(throws: CLIParseError.self) {
+            _ = try CLIParser.parse(["status", "--timeout", "0"])
+        }
+    }
+
+    @Test("omitting --cloud sends no cloud parameter so the user's Ta setting applies")
+    func cloudIsOmittedByDefault() throws {
+        #expect(try CLIParser.parse(["analyze", "last"]).action == .request(.analyzeImage, [:]))
+        #expect(try CLIParser.parse(["translate", "last"]).action == .ocrThenTranslate([:]))
+    }
+
+    @Test("capture app and window accept an app name or title fragment")
+    func captureByApp() throws {
+        #expect(try CLIParser.parse(["capture", "app", "Safari"]).action == .request(
+            .captureWindow,
+            ["app": .string("Safari")]
+        ))
+        #expect(try CLIParser.parse(["capture", "app", "Safari", "--title", "Docs", "--json"]).action == .request(
+            .captureWindow,
+            ["app": .string("Safari"), "title": .string("Docs")]
+        ))
+        #expect(try CLIParser.parse(["capture", "window", "--title", "Inbox"]).action == .request(
+            .captureWindow,
+            ["title": .string("Inbox")]
+        ))
+        #expect(try CLIParser.parse(["capture", "window", "--window-id", "7"]).action == .request(
+            .captureWindow,
+            ["windowId": .integer(7)]
+        ))
+        #expect(throws: CLIParseError.self) { _ = try CLIParser.parse(["capture", "app"]) }
+        #expect(throws: CLIParseError.self) {
+            _ = try CLIParser.parse(["capture", "window", "--window-id", "7", "--app", "Safari"])
+        }
+    }
+
+    @Test("--max-size maps to maxDimension and is range checked")
+    func maxSize() throws {
+        #expect(try CLIParser.parse(["capture", "frontmost", "--max-size", "1568"]).action == .request(
+            .captureFrontmost,
+            ["maxDimension": .integer(1_568)]
+        ))
+        #expect(throws: CLIParseError.self) {
+            _ = try CLIParser.parse(["capture", "frontmost", "--max-size", "4"])
+        }
+        #expect(throws: CLIParseError.self) {
+            _ = try CLIParser.parse(["capture", "frontmost", "--max-size", "big"])
+        }
+    }
+
+    @Test("--boxes and --overwrite are forwarded")
+    func boxesAndOverwrite() throws {
+        #expect(try CLIParser.parse(["ocr", "last", "--boxes"]).action == .request(
+            .recognizeOCR,
+            ["boxes": .bool(true)]
+        ))
+        let save = try CLIParser.parse(["save", "last", "--output", "/tmp/ta-save.png", "--overwrite"])
+        #expect(save.action == .request(.deliverSave, [
+            "path": .string("/tmp/ta-save.png"),
+            "overwrite": .bool(true)
+        ]))
+        #expect(save.overwrite)
+        let capture = try CLIParser.parse(["capture", "frontmost", "--output", "/tmp/ta.png"])
+        #expect(!capture.overwrite)
+        #expect(capture.action == .request(.captureFrontmost, [:]))
+    }
+
     @Test("transform apply requires a recipe")
     func transformRequiresRecipe() {
         #expect(throws: CLIParseError.self) {

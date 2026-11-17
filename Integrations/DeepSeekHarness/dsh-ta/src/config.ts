@@ -7,7 +7,12 @@ export interface Config {
   appPath: string
   timeoutMs: number
   autoLaunch: boolean
-  defaultCloud: 'auto' | 'allow' | 'deny'
+  /**
+   * 'inherit' (default) sends no cloud parameter, so the policy the user chose in
+   * Ta applies. An explicit value can only make a request stricter than that
+   * setting; Ta never lets a caller loosen it.
+   */
+  defaultCloud: 'inherit' | 'auto' | 'allow' | 'deny'
   allowClipboard: boolean
 }
 
@@ -16,7 +21,7 @@ export const defaultConfig: Config = {
   appPath: '/Applications/拓.app',
   timeoutMs: 15_000,
   autoLaunch: true,
-  defaultCloud: 'auto',
+  defaultCloud: 'inherit',
   allowClipboard: false,
 }
 
@@ -25,6 +30,6 @@ export const Config: Schema<Config> = Schema.object({
   appPath: Schema.string().default(defaultConfig.appPath),
   timeoutMs: Schema.number().min(100).max(120_000).default(defaultConfig.timeoutMs),
   autoLaunch: Schema.boolean().default(defaultConfig.autoLaunch),
-  defaultCloud: Schema.union(['auto', 'allow', 'deny']).default(defaultConfig.defaultCloud),
+  defaultCloud: Schema.union(['inherit', 'auto', 'allow', 'deny']).default(defaultConfig.defaultCloud),
   allowClipboard: Schema.boolean().default(defaultConfig.allowClipboard),
 })

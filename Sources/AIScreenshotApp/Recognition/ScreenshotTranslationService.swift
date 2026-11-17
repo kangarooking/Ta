@@ -1,6 +1,4 @@
 import AppKit
-import ImageIO
-import UniformTypeIdentifiers
 import AIScreenshotCore
 
 enum ScreenshotTranslationServiceError: LocalizedError {
@@ -48,7 +46,7 @@ struct ScreenshotTranslationService: @unchecked Sendable {
     func translateText(_ text: String) async throws -> String {
         let configuration = TranslationConfiguration.load()
         let profile = try requiredProfile()
-        let key = try profileStore.apiKey(for: profile.id)
+        let key = try apiKey(for: profile)
         return try await client.translateText(
             baseURL: profile.baseURL,
             model: profile.textModel,
@@ -65,7 +63,7 @@ struct ScreenshotTranslationService: @unchecked Sendable {
         guard !usableLines.isEmpty else { throw ScreenshotTranslationServiceError.missingTextBoxes }
         let configuration = TranslationConfiguration.load()
         let profile = try requiredProfile()
-        let key = try profileStore.apiKey(for: profile.id)
+        let key = try apiKey(for: profile)
         let segments = usableLines.enumerated().map {
             TranslationSourceSegment(id: $0.offset, text: $0.element.text)
         }
@@ -78,8 +76,8 @@ struct ScreenshotTranslationService: @unchecked Sendable {
             targetLanguage: configuration.targetLanguage,
             provider: profile.providerKind
         )
-        let byID = Dictionary(uniqueKeysWithValues: translated.map { ($0.id, $0.text) })
-        return usableLines.enumerated().compactMap { index, line in
+        let byID = Dictionary(translated.map { ($0.id, $0.text) }) { first, _ in first }
+        let allLines = usableLines.enumerated().compactMap { index, line -> TranslatedOCRLine? in
             guard let translatedText = byID[index], !translatedText.isEmpty else { return nil }
             return TranslatedOCRLine(
                 sourceText: line.text,
@@ -88,18 +86,24 @@ struct ScreenshotTranslationService: @unchecked Sendable {
                 confidence: line.confidence
             )
         }
+        // The client falls back to the source text for lines the model
+        // skipped. Repainting those would only blur the original pixels, so
+        // leave them untouched unless nothing else changed.
+        let changedLines = allLines.filter { $0.translatedText != $0.sourceText }
+        return changedLines.isEmpty ? allLines : changedLines
     }
 
     func translateWithVision(image: CGImage) async throws -> String {
         let configuration = TranslationConfiguration.load()
         let profile = try requiredProfile()
-        let key = try profileStore.apiKey(for: profile.id)
-        let imageData = try encodePNG(prepareOCRImage(image, maximumDimension: 2560))
+        let key = try apiKey(for: profile)
+        let imageData = try encodeForModel(image)
         return try await client.translateImage(
             baseURL: profile.baseURL,
             model: profile.visionModel,
             apiKey: key,
             imageData: imageData,
+            mimeType: ModelImageEncoder.mimeType,
             sourceLanguage: configuration.sourceLanguage,
             targetLanguage: configuration.targetLanguage,
             provider: profile.providerKind
@@ -107,7 +111,7 @@ struct ScreenshotTranslationService: @unchecked Sendable {
     }
 
     func testTextModel(profile: AIProviderProfile, apiKey: String? = nil) async throws -> String {
-        let key = try apiKey ?? profileStore.apiKey(for: profile.id)
+        let key = try apiKey ?? self.apiKey(for: profile)
         return try await client.testConnection(
             baseURL: profile.baseURL,
             model: profile.textModel,
@@ -118,28 +122,52 @@ struct ScreenshotTranslationService: @unchecked Sendable {
 
     func testVisionModel(profile: AIProviderProfile, apiKey: String? = nil) async throws -> String {
         let image = try makeVisionTestImage()
-        let key = try apiKey ?? profileStore.apiKey(for: profile.id)
-        let data = try encodePNG(image)
+        let key = try apiKey ?? self.apiKey(for: profile)
+        let data = try encodeForModel(image)
         return try await client.translateImage(
             baseURL: profile.baseURL,
             model: profile.visionModel,
             apiKey: key,
             imageData: data,
+            mimeType: ModelImageEncoder.mimeType,
             sourceLanguage: "英文",
             targetLanguage: "简体中文",
             provider: profile.providerKind
         )
     }
 
+    /// Self-hosted OpenAI-compatible servers on this Mac / LAN run without
+    /// an API key, so a missing key does not disqualify those profiles.
+    private func apiKeyIsOptional(for profile: AIProviderProfile) -> Bool {
+        profile.providerKind == .openAICompatible
+            && ProviderEndpointValidator().isLocalEndpoint(profile.baseURL)
+    }
+
+    private func apiKey(for profile: AIProviderProfile) throws -> String {
+        do {
+            return try profileStore.apiKey(for: profile.id)
+        } catch {
+            guard apiKeyIsOptional(for: profile) else { throw error }
+            return ""
+        }
+    }
+
+    private func isEligible(_ profile: AIProviderProfile) -> Bool {
+        if profileStore.translationEligibility(of: profile) == nil { return true }
+        return apiKeyIsOptional(for: profile)
+            && profile.validationMessage(requiresTextModel: true) == nil
+    }
+
     private func requiredProfile() throws -> AIProviderProfile {
         let state = try profileStore.loadState()
-        if let selected = state.translationProfile,
-           profileStore.translationEligibility(of: selected) == nil {
+        if let selected = state.translationProfile, isEligible(selected) {
             return selected
         }
-        let eligible = profileStore.eligibleTranslationProfiles(in: state)
+        let eligible = state.profiles.filter(isEligible)
         if eligible.count == 1, let only = eligible.first {
-            _ = try profileStore.setTranslationProfile(id: only.id)
+            // Persisting the choice is best-effort: the store may still
+            // refuse a key-less local profile.
+            _ = try? profileStore.setTranslationProfile(id: only.id)
             return only
         }
         if state.translationProfile != nil {
@@ -152,19 +180,12 @@ struct ScreenshotTranslationService: @unchecked Sendable {
         )
     }
 
-    private func encodePNG(_ image: CGImage) throws -> Data {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data,
-            UTType.png.identifier as CFString,
-            1,
-            nil
-        ) else { throw ScreenshotTranslationServiceError.imageEncodingFailed }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
+    private func encodeForModel(_ image: CGImage) throws -> Data {
+        do {
+            return try ModelImageEncoder.jpegData(from: image)
+        } catch {
             throw ScreenshotTranslationServiceError.imageEncodingFailed
         }
-        return data as Data
     }
 
     private func makeVisionTestImage() throws -> CGImage {

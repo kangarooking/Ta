@@ -18,6 +18,11 @@ public struct AnnotationRecipe: Codable, Equatable, Sendable {
         guard !operations.isEmpty else {
             throw AnnotationRecipeValidationError("标注配方至少需要一个 operation。")
         }
+        guard operations.count <= AnnotationRecipeLimits.maximumOperations else {
+            throw AnnotationRecipeValidationError(
+                "标注配方最多包含 \(AnnotationRecipeLimits.maximumOperations) 个 operation。"
+            )
+        }
 
         var elementIDs = existingElementIDs
         var sawCrop = false
@@ -67,6 +72,21 @@ public struct AnnotationRecipeValidationError: Error, Equatable, LocalizedError,
     public var errorDescription: String? { message }
 }
 
+/// Upper bounds enforced by recipe validation. Values beyond these are rejected
+/// before rendering so that renderer integer conversions can never trap.
+public enum AnnotationRecipeLimits {
+    public static let maximumOperations = 500
+    public static let maximumCoordinate: Double = 1_000_000
+    public static let maximumLineWidth: Double = 2_000
+    public static let maximumFontSize: Double = 2_000
+    public static let maximumDiameter: Double = 4_000
+    public static let maximumMosaicScale: Double = 512
+    public static let maximumBlurRadius: Double = 256
+    public static let maximumMagnifyFactor: Double = 64
+    public static let maximumPathPoints = 20_000
+    public static let maximumTextLength = 4_000
+}
+
 public struct AnnotationPoint: Codable, Equatable, Sendable {
     public let x: Double
     public let y: Double
@@ -76,7 +96,11 @@ public struct AnnotationPoint: Codable, Equatable, Sendable {
         self.y = y
     }
 
-    fileprivate var isFinite: Bool { x.isFinite && y.isFinite }
+    fileprivate var isFinite: Bool {
+        x.isFinite && y.isFinite
+            && abs(x) <= AnnotationRecipeLimits.maximumCoordinate
+            && abs(y) <= AnnotationRecipeLimits.maximumCoordinate
+    }
 }
 
 public struct AnnotationRect: Codable, Equatable, Sendable {
@@ -93,7 +117,9 @@ public struct AnnotationRect: Codable, Equatable, Sendable {
     }
 
     fileprivate var isValid: Bool {
-        x.isFinite && y.isFinite && width.isFinite && height.isFinite && width > 0 && height > 0
+        let limit = AnnotationRecipeLimits.maximumCoordinate
+        return x.isFinite && y.isFinite && width.isFinite && height.isFinite && width > 0 && height > 0
+            && abs(x) <= limit && abs(y) <= limit && width <= limit && height <= limit
     }
 }
 
@@ -461,48 +487,66 @@ public enum AnnotationOperation: Equatable, Sendable {
         }
         func requireRect(_ rect: AnnotationRect, name: String) throws {
             guard rect.isValid else {
-                throw AnnotationRecipeValidationError("\(name) 需要有限且大于 0 的宽高。")
+                throw AnnotationRecipeValidationError(
+                    "\(name) 需要有限且大于 0 的宽高，坐标与尺寸不能超过 \(Int(AnnotationRecipeLimits.maximumCoordinate))。"
+                )
             }
         }
-        func requireWidth(_ width: Double, name: String) throws {
-            guard width.isFinite, width > 0 else {
-                throw AnnotationRecipeValidationError("\(name) 必须是大于 0 的有限数字。")
+        func requireWidth(_ width: Double, name: String, maximum: Double) throws {
+            guard width.isFinite, width > 0, width <= maximum else {
+                throw AnnotationRecipeValidationError(
+                    "\(name) 必须是大于 0 且不超过 \(Int(maximum)) 的有限数字。"
+                )
             }
         }
+        func requirePointCount(_ count: Int, name: String) throws {
+            guard count <= AnnotationRecipeLimits.maximumPathPoints else {
+                throw AnnotationRecipeValidationError(
+                    "\(name) 最多包含 \(AnnotationRecipeLimits.maximumPathPoints) 个坐标。"
+                )
+            }
+        }
+        let maxLine = AnnotationRecipeLimits.maximumLineWidth
         switch self {
         case .crop(let value):
             try requireRect(value.rect, name: "crop.rect")
         case .rectangle(let value), .ellipse(let value):
             try requireID(value.id)
             try requireRect(value.rect, name: "rect")
-            try requireWidth(value.lineWidth, name: "lineWidth")
+            try requireWidth(value.lineWidth, name: "lineWidth", maximum: maxLine)
         case .arrow(let value):
             try requireID(value.id)
             guard value.start.isFinite, value.end.isFinite, value.start != value.end else {
                 throw AnnotationRecipeValidationError("arrow 需要两个不同的有限坐标。")
             }
-            try requireWidth(value.lineWidth, name: "lineWidth")
+            try requireWidth(value.lineWidth, name: "lineWidth", maximum: maxLine)
         case .pen(let value), .highlighter(let value):
             try requireID(value.id)
             guard !value.points.isEmpty, value.points.allSatisfy(\.isFinite) else {
                 throw AnnotationRecipeValidationError("画笔路径至少需要一个有限坐标。")
             }
-            try requireWidth(value.lineWidth, name: "lineWidth")
+            try requirePointCount(value.points.count, name: "points")
+            try requireWidth(value.lineWidth, name: "lineWidth", maximum: maxLine)
         case .text(let value):
             try requireID(value.id)
             guard value.origin.isFinite, !value.text.isEmpty else {
                 throw AnnotationRecipeValidationError("text 需要有限坐标和非空文字。")
             }
-            try requireWidth(value.fontSize, name: "fontSize")
+            guard value.text.count <= AnnotationRecipeLimits.maximumTextLength else {
+                throw AnnotationRecipeValidationError(
+                    "text 最多 \(AnnotationRecipeLimits.maximumTextLength) 个字符。"
+                )
+            }
+            try requireWidth(value.fontSize, name: "fontSize", maximum: AnnotationRecipeLimits.maximumFontSize)
         case .number(let value):
             try requireID(value.id)
             guard value.center.isFinite else {
                 throw AnnotationRecipeValidationError("number.center 必须是有限坐标。")
             }
-            try requireWidth(value.diameter, name: "diameter")
+            try requireWidth(value.diameter, name: "diameter", maximum: AnnotationRecipeLimits.maximumDiameter)
         case .mosaic(let value):
             try requireID(value.id)
-            try requireWidth(value.scale, name: "mosaic.scale")
+            try requireWidth(value.scale, name: "mosaic.scale", maximum: AnnotationRecipeLimits.maximumMosaicScale)
             switch value.mode {
             case .rect:
                 guard let rect = value.rect, value.points == nil else {
@@ -514,17 +558,21 @@ public enum AnnotationOperation: Equatable, Sendable {
                       points.allSatisfy(\.isFinite) else {
                     throw AnnotationRecipeValidationError("笔刷马赛克只接受非空 points。")
                 }
-                try requireWidth(value.lineWidth, name: "mosaic.lineWidth")
+                try requirePointCount(points.count, name: "mosaic.points")
+                try requireWidth(value.lineWidth, name: "mosaic.lineWidth", maximum: maxLine)
             }
         case .blur(let value):
             try requireID(value.id)
             try requireRect(value.rect, name: "blur.rect")
-            try requireWidth(value.radius, name: "blur.radius")
+            try requireWidth(value.radius, name: "blur.radius", maximum: AnnotationRecipeLimits.maximumBlurRadius)
         case .magnify(let value):
             try requireID(value.id)
             try requireRect(value.rect, name: "magnify.rect")
-            guard value.factor.isFinite, value.factor > 1 else {
-                throw AnnotationRecipeValidationError("magnify.factor 必须大于 1。")
+            guard value.factor.isFinite, value.factor > 1,
+                  value.factor <= AnnotationRecipeLimits.maximumMagnifyFactor else {
+                throw AnnotationRecipeValidationError(
+                    "magnify.factor 必须大于 1 且不超过 \(Int(AnnotationRecipeLimits.maximumMagnifyFactor))。"
+                )
             }
         case .eraser(let value):
             guard !value.targetIDs.isEmpty,

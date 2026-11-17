@@ -175,6 +175,63 @@ final class ScrollingImageStitcherTests: XCTestCase {
         XCTAssertEqual(stitcher.outputPixelHeight, 355, accuracy: 2)
     }
 
+    func testDenseFramesAreTrackedThenCommittedWithoutLosingRows() throws {
+        let source = try makeStripedImage(width: 240, height: 900)
+        let stitcher = ScrollingImageStitcher(sampleWidth: 80)
+        stitcher.minimumCommitPixelHeight = 100
+        var sawTracking = false
+        var appendedCount = 0
+        // 13 px per frame: far below the commit threshold, like a slow
+        // manual scroll sampled at a high frame rate.
+        for y in stride(from: 0, through: 390, by: 13) {
+            let frame = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: y, width: 240, height: 300)))
+            switch try stitcher.append(frame) {
+            case .tracking: sawTracking = true
+            case .appended: appendedCount += 1
+            case .rejected: XCTFail("Dense frame at \(y) must be matched")
+            case .firstFrame, .duplicate: break
+            }
+        }
+        XCTAssertTrue(sawTracking)
+        XCTAssertLessThanOrEqual(appendedCount, 4)
+        XCTAssertGreaterThan(stitcher.pendingPixelHeight, 0)
+
+        _ = try stitcher.commitPending()
+
+        XCTAssertEqual(stitcher.pendingPixelHeight, 0)
+        XCTAssertEqual(stitcher.outputPixelHeight, 690, accuracy: 3)
+        XCTAssertEqual(try stitcher.makeImage().height, 690, accuracy: 3)
+    }
+
+    func testTallRetinaFrameSeamIsRefinedToExactPixelRow() throws {
+        // Taller than the 720-row matching sample, so the coarse shift is
+        // quantised to ~2.5 px; the seam must still land on the exact row.
+        let source = try makeStripedImage(width: 300, height: 2_600)
+        let first = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: 0, width: 300, height: 1_800)))
+        let second = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: 517, width: 300, height: 1_800)))
+        let stitcher = ScrollingImageStitcher(sampleWidth: 96)
+
+        _ = try stitcher.append(first)
+        guard case .appended(let newPixelHeight, _) = try stitcher.append(second) else {
+            return XCTFail("Expected appended frame")
+        }
+        XCTAssertEqual(newPixelHeight, 517, accuracy: 1)
+    }
+
+    func testUpwardTrackingCommitsPendingRowsAboveTheStart() throws {
+        let source = try makeStripedImage(width: 220, height: 700)
+        let stitcher = ScrollingImageStitcher(sampleWidth: 80)
+        stitcher.minimumCommitPixelHeight = 80
+        for y in stride(from: 300, through: 180, by: -15) {
+            let frame = try XCTUnwrap(source.cropping(to: CGRect(x: 0, y: y, width: 220, height: 260)))
+            XCTAssertNotEqual(try stitcher.append(frame, constraint: .upwardOnly), .rejected)
+        }
+        _ = try stitcher.commitPending()
+
+        XCTAssertTrue(stitcher.segments.allSatisfy { $0.direction == .up })
+        XCTAssertEqual(stitcher.outputPixelHeight, 380, accuracy: 3)
+    }
+
     func testStitcherSplitsUltraLongOutputIntoBoundedParts() throws {
         let source = try makeStripedImage(width: 200, height: 760)
         let stitcher = ScrollingImageStitcher(sampleWidth: 80)

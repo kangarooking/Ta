@@ -6,6 +6,7 @@ struct TranslationSettingsView: View {
     @AppStorage("translationTargetLanguage") private var targetLanguage = TranslationConfiguration.defaultTargetLanguage
     @AppStorage("translationDefaultMode") private var defaultMode = ScreenshotTranslationMode.textOnly.rawValue
     @AppStorage("translationUsesVisionFallback") private var usesVisionFallback = true
+    @AppStorage(TranslationVisionUploadConsent.skipConfirmationDefaultsKey) private var skipsVisionUploadConfirmation = false
 
     @State private var state = AIProviderProfileState()
     @State private var eligibleProfiles: [AIProviderProfile] = []
@@ -171,6 +172,17 @@ struct TranslationSettingsView: View {
                     }
                 }
                 Toggle("本地 OCR 置信度较低时，使用视觉模型读取截图", isOn: $usesVisionFallback)
+                Toggle(
+                    "上传截图给视觉模型前先询问",
+                    isOn: Binding(
+                        get: { !skipsVisionUploadConfirmation },
+                        set: { skipsVisionUploadConfirmation = !$0 }
+                    )
+                )
+                .disabled(!usesVisionFallback)
+                Text("本地识别不到文字或置信度偏低时，拓会先征得你的同意，再把本次框选的图片发送给视觉模型。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Text("快捷键 \(translationShortcut.displayText) 始终执行“翻译文字并复制”。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

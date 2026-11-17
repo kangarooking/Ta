@@ -55,7 +55,7 @@ struct TaAgentArtifactStoreTests {
     func cleanupExpiredArtifacts() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = TaAgentArtifactStore(rootDirectory: root, retention: 60)
+        let store = TaAgentArtifactStore(rootDirectory: root, retention: 60, automaticCleanupInterval: nil)
         let old = Date(timeIntervalSince1970: 1_000)
         let current = Date(timeIntervalSince1970: 2_000)
 
@@ -73,6 +73,36 @@ struct TaAgentArtifactStoreTests {
         #expect(removed == 1)
         #expect(!FileManager.default.fileExists(atPath: expired.path))
         #expect(FileManager.default.fileExists(atPath: fresh.path))
+    }
+
+    @Test("saving a new artifact opportunistically expires old ones, throttled")
+    func saveTriggersThrottledCleanup() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = TaAgentArtifactStore(rootDirectory: root, retention: 60, automaticCleanupInterval: 600)
+        let start = Date(timeIntervalSince1970: 10_000)
+
+        // First save runs a cleanup (nothing to remove) and starts the throttle window.
+        let first = try await store.save(
+            data: Data("a".utf8), requestID: "first", filename: "capture.png",
+            mimeType: "image/png", width: nil, height: nil, now: start
+        )
+        // Within the throttle window: "first" is already expired but must survive.
+        _ = try await store.save(
+            data: Data("b".utf8), requestID: "second", filename: "capture.png",
+            mimeType: "image/png", width: nil, height: nil, now: start.addingTimeInterval(300)
+        )
+        #expect(FileManager.default.fileExists(atPath: first.path))
+        #expect(await store.cleanupExpiredIfDue(now: start.addingTimeInterval(301)) == nil)
+
+        // After the window: the next save expires both older request directories.
+        let third = try await store.save(
+            data: Data("c".utf8), requestID: "third", filename: "capture.png",
+            mimeType: "image/png", width: nil, height: nil, now: start.addingTimeInterval(700)
+        )
+        #expect(!FileManager.default.fileExists(atPath: first.path))
+        #expect(FileManager.default.fileExists(atPath: third.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["third"])
     }
 
     @Test("clear removes all cached Agent request directories")

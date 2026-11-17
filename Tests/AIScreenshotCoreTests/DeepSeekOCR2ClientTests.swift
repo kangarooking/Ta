@@ -17,7 +17,9 @@ final class DeepSeekOCR2ClientTests: XCTestCase {
             XCTAssertEqual(json["model"] as? String, DeepSeekOCR2Client.latestOfficialModel)
             let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
             let content = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
-            XCTAssertEqual(content.first?["text"] as? String, "<image>\nFree OCR.")
+            // The image is an image_url part; no literal "<image>" placeholder.
+            XCTAssertEqual(content.first?["text"] as? String, "Free OCR.")
+            XCTAssertEqual(messages.count, 1)
             let imagePart = try XCTUnwrap(content.first { ($0["type"] as? String) == "image_url" })
             let imageURL = try XCTUnwrap(imagePart["image_url"] as? [String: Any])
             XCTAssertEqual(imageURL["url"] as? String, "data:image/png;base64,AQID")
@@ -49,7 +51,7 @@ final class DeepSeekOCR2ClientTests: XCTestCase {
             let content = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
             XCTAssertEqual(
                 content.first?["text"] as? String,
-                "<image>\n<|grounding|>Convert the document to markdown."
+                "<|grounding|>Convert the document to markdown."
             )
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data(##"{"choices":[{"message":{"content":"# 标题"}}]}"##.utf8))
@@ -82,10 +84,49 @@ final class DeepSeekOCR2ClientTests: XCTestCase {
         }
     }
 
+    func testGroundingTagsAreStrippedFromOutput() async throws {
+        DeepSeekOCRURLProtocol.handler = { request in
+            let content = "<|ref|>title<|/ref|><|det|>[[52, 40, 900, 96]]<|/det|>\n# 标题\n\n"
+                + "<|ref|>text<|/ref|><|det|>[[52, 120, 900, 300]]<|/det|>\n正文第一段。"
+            let data = try JSONSerialization.data(withJSONObject: [
+                "choices": [["message": ["content": content], "finish_reason": "stop"]]
+            ])
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, data)
+        }
+        let result = try await makeClient().recognize(
+            baseURL: "https://ocr.example.com/v1",
+            model: "deepseek-ai/DeepSeek-OCR-2",
+            apiKey: "secret",
+            imageData: Data([1]),
+            mode: .documentMarkdown
+        )
+        XCTAssertEqual(result, "# 标题\n\n正文第一段。")
+    }
+
+    func testStrippingLeavesPlainTextUntouched() {
+        XCTAssertEqual(DeepSeekOCR2Client.strippingGroundingTags(from: "a < b |> c\nline"), "a < b |> c\nline")
+        XCTAssertEqual(DeepSeekOCR2Client.strippingGroundingTags(from: "<|grounding|>文本"), "文本")
+    }
+
+    func testTruncatedOCRIsMarked() async throws {
+        DeepSeekOCRURLProtocol.handler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data(#"{"choices":[{"message":{"content":"半页"},"finish_reason":"length"}]}"#.utf8))
+        }
+        let result = try await makeClient().recognize(
+            baseURL: "http://127.0.0.1:8000/v1",
+            model: "deepseek-ai/DeepSeek-OCR-2",
+            apiKey: "",
+            imageData: Data([1]),
+            mode: .plainText
+        )
+        XCTAssertTrue(ProviderOutputNotice.isTruncated(result))
+    }
+
     private func makeClient() -> DeepSeekOCR2Client {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DeepSeekOCRURLProtocol.self]
-        return DeepSeekOCR2Client(session: URLSession(configuration: configuration))
+        return DeepSeekOCR2Client(session: URLSession(configuration: configuration), retryBaseDelay: 0)
     }
 
     private static func bodyData(from request: URLRequest) -> Data? {

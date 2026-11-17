@@ -118,7 +118,11 @@ struct TaAgentCaptureService: Sendable {
             visibleBundleIdentifiers = [bundleIdentifier]
         } else {
             visibleBundleIdentifiers = Set(snapshot.windows.compactMap { window in
-                guard window.frame.intersects(resolution.target.frame) else { return nil }
+                // Status-bar items and other sliver windows show no content
+                // worth protecting; counting them would make a menu-bar
+                // password manager block every display capture.
+                guard window.frame.height > 40,
+                      window.frame.intersects(resolution.target.frame) else { return nil }
                 return window.bundleIdentifier
             })
         }

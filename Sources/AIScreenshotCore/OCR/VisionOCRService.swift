@@ -70,12 +70,6 @@ public struct VisionOCRService: Sendable {
                     return lhs.boundingBox.midY > rhs.boundingBox.midY
                 }
 
-            let document = OCRDocumentLayoutAnalyzer().analyze(lines: lines)
-            let rawText = lines.map(\.text).joined(separator: "\n")
-            var text = OCRTextNormalizer().normalize(rawText, mergeWrappedLines: mergeWrappedLines)
-            let confidence = lines.isEmpty
-                ? 0
-                : lines.map(\.confidence).reduce(0, +) / Float(lines.count)
             let barcodes = (barcodeRequest.results ?? []).compactMap { observation -> DetectedBarcode? in
                 guard let payload = observation.payloadStringValue, !payload.isEmpty else { return nil }
                 return DetectedBarcode(
@@ -84,27 +78,11 @@ public struct VisionOCRService: Sendable {
                     boundingBox: observation.boundingBox
                 )
             }
-            if text.isEmpty, !barcodes.isEmpty {
-                text = barcodes.map(\.payload).joined(separator: "\n")
-            }
-            if let table = document.tables.first, table.rows.count >= 2 {
-                text = table.tsv
-            }
-            let contentType: CaptureContentType = if !barcodes.isEmpty && lines.isEmpty {
-                .qrCode
-            } else if !document.tables.isEmpty {
-                .table
-            } else {
-                ContentClassifier().classify(text)
-            }
-
-            return OCRResult(
-                text: text,
-                contentType: contentType,
-                confidence: confidence,
+            return OCRResultAssembler().assemble(
+                lines: lines,
+                barcodes: barcodes,
                 languages: languages,
-                document: document,
-                barcodes: barcodes
+                mergeWrappedLines: mergeWrappedLines
             )
         }.value
     }
@@ -172,25 +150,12 @@ public struct VisionOCRService: Sendable {
             }
         }
 
-        let rawText = lines.map(\.text).joined(separator: "\n")
-        var text = OCRTextNormalizer().normalize(rawText, mergeWrappedLines: mergeWrappedLines)
-        if text.isEmpty, !barcodes.isEmpty { text = barcodes.map(\.payload).joined(separator: "\n") }
-        if let table = layout.tables.first, table.rows.count >= 2 { text = table.tsv }
-        let confidence = lines.isEmpty ? 0 : lines.map(\.confidence).reduce(0, +) / Float(lines.count)
-        let contentType: CaptureContentType = if !barcodes.isEmpty && lines.isEmpty {
-            .qrCode
-        } else if !layout.tables.isEmpty {
-            .table
-        } else {
-            ContentClassifier().classify(text)
-        }
-        return OCRResult(
-            text: text,
-            contentType: contentType,
-            confidence: confidence,
+        return OCRResultAssembler().assemble(
+            lines: lines,
+            layout: layout,
+            barcodes: barcodes,
             languages: languages,
-            document: layout,
-            barcodes: barcodes
+            mergeWrappedLines: mergeWrappedLines
         )
     }
 }

@@ -19,6 +19,25 @@ struct CLIInvocation: Equatable, Sendable {
     let requestID: String
     let socketURL: URL
     let outputPath: String?
+    let overwrite: Bool
+
+    init(
+        action: CLIAction,
+        outputFormat: CLIOutputFormat,
+        timeout: TimeInterval,
+        requestID: String,
+        socketURL: URL,
+        outputPath: String?,
+        overwrite: Bool = false
+    ) {
+        self.action = action
+        self.outputFormat = outputFormat
+        self.timeout = timeout
+        self.requestID = requestID
+        self.socketURL = socketURL
+        self.outputPath = outputPath
+        self.overwrite = overwrite
+    }
 }
 
 struct CLIParseError: Error, Equatable, LocalizedError, Sendable {
@@ -35,9 +54,10 @@ enum CLIParser {
       ta window list [--app <名称或 Bundle ID>] [--json]
       ta capture screen [--display <ID>] [--output <PNG>] [--json]
       ta capture frontmost [--output <PNG>] [--json]
-      ta capture window --window-id <ID> [--output <PNG>] [--json]
+      ta capture window --window-id <ID> | --app <名称或 Bundle ID> | --title <标题片段>
+      ta capture app <名称或 Bundle ID> [--title <标题片段>] [--output <PNG>] [--json]
       ta capture region --display <ID> --x <N> --y <N> --width <N> --height <N>
-      ta ocr [last|图片路径] [--languages zh-Hans,en-US] [--json]
+      ta ocr [last|图片路径] [--languages zh-Hans,en-US] [--boxes] [--json]
       ta analyze [last|图片路径] [--task general|extractText|explainCode|tableMarkdown|formulaLaTeX]
       ta translate [last|图片路径] --mode text|image [--cloud auto|allow|deny]
       ta translate text --text <内容> [--cloud auto|allow|deny]
@@ -47,15 +67,50 @@ enum CLIParser {
       ta save [last|图片路径] --output <PNG>
 
     通用参数：--json --timeout <秒> --request-id <ID> --socket <路径> --cloud auto|allow|deny
+    截图参数：--max-size <像素>（限制输出长边，例如 1568）
+    保存参数：--output <PNG> 默认不覆盖已有文件，需要时加 --overwrite
+    默认超时：状态/列表 10 秒，截图/标注/保存 30 秒，OCR/识图/翻译 180 秒。
+    --cloud 只能比拓设置更严格；不传时使用用户在拓里设置的云端策略。
     """
+
+    static let quickTimeout: TimeInterval = 10
+    static let localWorkTimeout: TimeInterval = 30
+    static let localRecognitionTimeout: TimeInterval = 60
+    static let cloudCapableTimeout: TimeInterval = 180
+
+    /// Cloud-capable commands can legitimately take minutes. A short default made
+    /// the CLI give up while Ta was still uploading, inviting duplicate retries.
+    static func defaultTimeout(for action: CLIAction) -> TimeInterval {
+        switch action {
+        case .ocrThenTranslate:
+            return cloudCapableTimeout
+        case .request(let method, let params):
+            switch method {
+            case .analyzeImage, .translateText, .translateImage:
+                return cloudCapableTimeout
+            case .recognizeOCR:
+                return params["cloud"] == .string(AgentCloudPolicy.deny.rawValue)
+                    ? localRecognitionTimeout
+                    : cloudCapableTimeout
+            case .captureDisplay, .captureFrontmost, .captureWindow, .captureRegion,
+                 .transformImage, .deliverCopy, .deliverSave:
+                return localWorkTimeout
+            default:
+                return quickTimeout
+            }
+        }
+    }
 
     static func parse(_ rawArguments: [String]) throws -> CLIInvocation {
         var arguments = rawArguments
         guard !arguments.isEmpty else { throw CLIParseError(message: usage) }
 
         let outputFormat: CLIOutputFormat = removeFlag("--json", from: &arguments) ? .json : .human
-        let timeout = try removeDoubleOption("--timeout", from: &arguments) ?? 10
-        guard timeout > 0 else { throw CLIParseError(message: "--timeout 必须大于 0。") }
+        let explicitTimeout = try removeDoubleOption("--timeout", from: &arguments)
+        if let explicitTimeout, explicitTimeout <= 0 {
+            throw CLIParseError(message: "--timeout 必须大于 0。")
+        }
+        let overwrite = removeFlag("--overwrite", from: &arguments)
         let requestID = try removeOption("--request-id", from: &arguments)
             ?? "ta_\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
         let socketPath = try removeOption("--socket", from: &arguments)
@@ -78,15 +133,17 @@ enum CLIParser {
                 throw CLIParseError(message: "save 需要 --output <PNG>。")
             }
             params["path"] = .string(outputPath)
+            if overwrite { params["overwrite"] = .bool(true) }
             action = .request(.deliverSave, params)
         }
         return CLIInvocation(
             action: action,
             outputFormat: outputFormat,
-            timeout: timeout,
+            timeout: explicitTimeout ?? defaultTimeout(for: action),
             requestID: requestID,
             socketURL: socketURL,
-            outputPath: outputPath
+            outputPath: outputPath,
+            overwrite: overwrite
         )
     }
 
@@ -121,6 +178,9 @@ enum CLIParser {
             if removeFlag("--merge-wrapped-lines", from: &arguments) {
                 params["mergeWrappedLines"] = .bool(true)
             }
+            if removeFlag("--boxes", from: &arguments) {
+                params["boxes"] = .bool(true)
+            }
             return .request(.recognizeOCR, params)
         case "analyze":
             try addImageInput(from: &arguments, to: &params)
@@ -154,6 +214,12 @@ enum CLIParser {
         guard !arguments.isEmpty else { throw CLIParseError(message: "capture 需要目标类型。") }
         let target = arguments.removeFirst()
         var params = initialParams
+        if let maxSize = try removeUInt32Option("--max-size", from: &arguments) {
+            guard maxSize >= 16, maxSize <= 16_384 else {
+                throw CLIParseError(message: "--max-size 需要 16 到 16384 之间的整数。")
+            }
+            params["maxDimension"] = .integer(Int64(maxSize))
+        }
         switch target {
         case "screen", "display":
             if let id = try removeUInt32Option("--display", from: &arguments) {
@@ -163,10 +229,33 @@ enum CLIParser {
         case "frontmost":
             return .request(.captureFrontmost, params)
         case "window":
-            guard let id = try removeUInt32Option("--window-id", from: &arguments) else {
-                throw CLIParseError(message: "capture window 需要 --window-id <ID>。")
+            let app = try removeOption("--app", from: &arguments)
+            let title = try removeOption("--title", from: &arguments)
+            if let id = try removeUInt32Option("--window-id", from: &arguments) {
+                guard app == nil, title == nil else {
+                    throw CLIParseError(message: "--window-id 不能与 --app 或 --title 同时使用。")
+                }
+                params["windowId"] = .integer(Int64(id))
+                return .request(.captureWindow, params)
             }
-            params["windowId"] = .integer(Int64(id))
+            guard app != nil || title != nil else {
+                throw CLIParseError(
+                    message: "capture window 需要 --window-id <ID>，或 --app <名称> / --title <标题片段>。"
+                )
+            }
+            if let app { params["app"] = .string(app) }
+            if let title { params["title"] = .string(title) }
+            return .request(.captureWindow, params)
+        case "app":
+            guard let name = arguments.first, !name.hasPrefix("--"),
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CLIParseError(message: "capture app 需要 App 名称或 Bundle ID，例如：ta capture app \"Safari\"。")
+            }
+            arguments.removeFirst()
+            params["app"] = .string(name)
+            if let title = try removeOption("--title", from: &arguments) {
+                params["title"] = .string(title)
+            }
             return .request(.captureWindow, params)
         case "region":
             guard let display = try removeUInt32Option("--display", from: &arguments),

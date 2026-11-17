@@ -8,16 +8,23 @@ enum TaAgentArtifactStoreError: Error, Equatable {
 
 actor TaAgentArtifactStore {
     static let defaultRetention: TimeInterval = 24 * 60 * 60
+    static let defaultAutomaticCleanupInterval: TimeInterval = 10 * 60
 
     let rootDirectory: URL
     let retention: TimeInterval
+    /// Minimum spacing between opportunistic cleanups triggered by `save`.
+    /// `nil` disables automatic cleanup.
+    let automaticCleanupInterval: TimeInterval?
+    private var lastAutomaticCleanup: Date?
 
     init(
         rootDirectory: URL = TaAgentArtifactStore.defaultRootDirectory(),
-        retention: TimeInterval = TaAgentArtifactStore.defaultRetention
+        retention: TimeInterval = TaAgentArtifactStore.defaultRetention,
+        automaticCleanupInterval: TimeInterval? = TaAgentArtifactStore.defaultAutomaticCleanupInterval
     ) {
         self.rootDirectory = rootDirectory.standardizedFileURL
         self.retention = retention
+        self.automaticCleanupInterval = automaticCleanupInterval
     }
 
     func save(
@@ -44,6 +51,7 @@ actor TaAgentArtifactStore {
 
         try data.write(to: outputURL, options: [.atomic])
         try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: requestDirectory.path)
+        cleanupExpiredIfDue(now: now)
 
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return AgentArtifact(
@@ -56,6 +64,18 @@ actor TaAgentArtifactStore {
             sha256: digest,
             expiresAt: now.addingTimeInterval(retention)
         )
+    }
+
+    /// Runs `cleanupExpired` at most once per `automaticCleanupInterval`.
+    /// Returns the number of removed request directories, or `nil` when skipped.
+    @discardableResult
+    func cleanupExpiredIfDue(now: Date = Date()) -> Int? {
+        guard let interval = automaticCleanupInterval else { return nil }
+        if let last = lastAutomaticCleanup, abs(now.timeIntervalSince(last)) < interval {
+            return nil
+        }
+        lastAutomaticCleanup = now
+        return (try? cleanupExpired(now: now)) ?? 0
     }
 
     func cleanupExpired(now: Date = Date()) throws -> Int {
@@ -72,12 +92,14 @@ actor TaAgentArtifactStore {
         var removed = 0
 
         for child in children {
-            let values = try child.resourceValues(forKeys: keys)
-            guard values.isDirectory == true,
+            // One unreadable or busy entry must not stop the rest from expiring.
+            guard let values = try? child.resourceValues(forKeys: keys),
+                  values.isDirectory == true,
                   let modifiedAt = values.contentModificationDate,
                   modifiedAt <= cutoff else { continue }
-            try fileManager.removeItem(at: child)
-            removed += 1
+            if (try? fileManager.removeItem(at: child)) != nil {
+                removed += 1
+            }
         }
         return removed
     }
@@ -104,7 +126,7 @@ actor TaAgentArtifactStore {
         }
     }
 
-    private static func defaultRootDirectory() -> URL {
+    static func defaultRootDirectory() -> URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base

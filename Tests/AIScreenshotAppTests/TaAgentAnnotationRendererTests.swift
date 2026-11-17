@@ -50,6 +50,33 @@ struct TaAgentAnnotationRendererTests {
         }
     }
 
+    @Test("renderer clamps out-of-range filter sizes instead of trapping")
+    func rendererClampsUnvalidatedSizes() throws {
+        let source = try fixtureImage(width: 120, height: 90)
+        let rect = AnnotationRect(x: 8, y: 8, width: 60, height: 40)
+
+        // Bypass recipe validation on purpose: the renderer must be safe on its own.
+        let image = try TaAgentAnnotationRenderer().render(
+            sourceImage: source,
+            cropRect: nil,
+            elements: [
+                .mosaic(.init(id: "mosaic", mode: .rect, rect: rect, scale: 1e30)),
+                .blur(.init(id: "nan", rect: rect, radius: .nan))
+            ]
+        )
+        // A huge radius is clamped; it may render or fail with an error, but must never trap.
+        _ = try? TaAgentAnnotationRenderer().render(
+            sourceImage: source,
+            cropRect: nil,
+            elements: [.blur(.init(id: "blur", rect: rect, radius: 1e30))]
+        )
+
+        #expect(image.width == 120)
+        #expect(image.height == 90)
+        #expect(TaAgentAnnotationRenderer.clamped(.infinity, lower: 2, upper: 512) == 2)
+        #expect(TaAgentAnnotationRenderer.clamped(1e30, lower: 2, upper: 512) == 512)
+    }
+
     private static let visibleOperations: [AnnotationOperation] = [
         .rectangle(.init(id: "rect", rect: .init(x: 8, y: 8, width: 42, height: 28))),
         .ellipse(.init(id: "ellipse", rect: .init(x: 8, y: 8, width: 42, height: 28))),

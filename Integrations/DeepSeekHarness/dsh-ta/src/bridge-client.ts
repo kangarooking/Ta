@@ -15,6 +15,8 @@ export interface TaBridgeClientConfig {
 export interface TaBridgeRequestOptions {
   requestId?: string
   signal?: AbortSignal
+  /** Overrides the configured timeout for this request (e.g. slow cloud calls). */
+  timeoutMs?: number
 }
 
 export class TaBridgeClient {
@@ -36,8 +38,9 @@ export class TaBridgeClient {
       params,
       client: { name: 'dsh-ta', version: '1.0.1' },
     }
+    const timeoutMs = options.timeoutMs ?? this.config.timeoutMs
     try {
-      return await this.requestOnce(request, options.signal)
+      return await this.requestOnce(request, options.signal, timeoutMs)
     } catch (error) {
       if (!this.config.autoLaunch || !isBridgeUnavailable(error) || options.signal?.aborted) throw error
     }
@@ -48,7 +51,7 @@ export class TaBridgeClient {
     while (Date.now() < deadline) {
       throwIfAborted(options.signal)
       try {
-        return await this.requestOnce(request, options.signal)
+        return await this.requestOnce(request, options.signal, timeoutMs)
       } catch (error) {
         lastError = error
         if (!isBridgeUnavailable(error)) throw error
@@ -58,7 +61,11 @@ export class TaBridgeClient {
     throw lastError instanceof Error ? lastError : new Error('Ta Bridge did not become ready.')
   }
 
-  private requestOnce(request: TaRequest, signal?: AbortSignal): Promise<TaResponse> {
+  private requestOnce(
+    request: TaRequest,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<TaResponse> {
     throwIfAborted(signal)
     return new Promise<TaResponse>((resolve, reject) => {
       let socket: Socket | undefined
@@ -66,8 +73,13 @@ export class TaBridgeClient {
       let buffer = Buffer.alloc(0)
       let expectedLength: number | undefined
       const timer = setTimeout(() => {
-        finish(new DOMException(`Ta Bridge timed out after ${this.config.timeoutMs} ms.`, 'TimeoutError'))
-      }, this.config.timeoutMs)
+        // Not retried: Ta may still be executing the request (and may already have
+        // uploaded to a cloud model), so re-sending could run it twice.
+        finish(new DOMException(
+          `Ta Bridge timed out after ${timeoutMs} ms. The request may still be running in Ta; do not retry automatically.`,
+          'TimeoutError',
+        ))
+      }, timeoutMs)
 
       const onAbort = () => finish(abortError(signal))
       const finish = (error?: unknown, response?: TaResponse) => {

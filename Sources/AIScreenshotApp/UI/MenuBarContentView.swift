@@ -107,6 +107,9 @@ struct MenuBarContentView: View {
                     HStack(spacing: 10) {
                         Button("恢复穿透") { appModel.restorePinInteraction() }
                         Button("恢复关闭") { appModel.restoreLastClosedPin() }
+                        Spacer()
+                        Button("截图历史") { appModel.openCaptureHistoryFolder() }
+                            .help("打开本机截图历史文件夹（需在“设置 › 常规”中开启保存历史）")
                     }
                     .buttonStyle(.link)
                 }
@@ -149,6 +152,7 @@ struct MenuBarContentView: View {
         }
         .frame(width: 326)
         .tint(TaPalette.cinnabar)
+        .environment(\.colorScheme, .light)
         .task {
             appModel.start()
         }

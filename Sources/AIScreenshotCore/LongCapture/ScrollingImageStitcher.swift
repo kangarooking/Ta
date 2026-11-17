@@ -24,6 +24,10 @@ public enum ScrollingImageStitcherError: LocalizedError {
 public enum ScrollingFrameDisposition: Equatable, Sendable {
     case firstFrame
     case appended(newPixelHeight: Int, confidence: Double)
+    /// The viewport moved and the frame was tracked, but the new content is
+    /// still smaller than `minimumCommitPixelHeight`. Nothing was added to the
+    /// output yet; the frame is kept as the pending tail.
+    case tracking(pendingPixelHeight: Int)
     case duplicate
     case rejected
 }
@@ -70,6 +74,33 @@ public final class ScrollingImageStitcher {
         let height: Int
     }
 
+    /// A committed frame that later frames are registered against at full
+    /// vertical resolution.
+    private struct Anchor {
+        let sample: GrayscaleFrame
+        let fine: GrayscaleFrame
+        let offset: Int
+    }
+
+    private struct PendingFrame {
+        let image: CGImage
+        let sample: GrayscaleFrame
+        let confidence: Double
+    }
+
+    /// Dense capture produces many frames that each reveal only a few new
+    /// rows. Committing every one of them would keep hundreds of full frames
+    /// in memory and multiply seams, so frames are *tracked* until at least
+    /// this many new pixels are visible, then committed as one segment.
+    /// `0` commits every moved frame (the historical behaviour).
+    public var minimumCommitPixelHeight = 0
+
+    private let fineSampleWidth = 160
+    private var anchorDown: Anchor?
+    private var anchorUp: Anchor?
+    private var pendingFrame: PendingFrame?
+    private var lastSampleShift: Int?
+
     private let matcher: VerticalScrollMatcher
     private let sampleWidth: Int
     private let sampleHeight: Int
@@ -85,7 +116,7 @@ public final class ScrollingImageStitcher {
 
     public init(
         matcher: VerticalScrollMatcher = VerticalScrollMatcher(),
-        sampleWidth: Int = 96,
+        sampleWidth: Int = 144,
         sampleHeight: Int = 720,
         maximumOutputPixels: Int = 120_000_000
     ) {
@@ -154,6 +185,33 @@ public final class ScrollingImageStitcher {
         viewportOffset = 0
         minimumViewportOffset = 0
         maximumViewportOffset = 0
+        anchorDown = nil
+        anchorUp = nil
+        pendingFrame = nil
+        lastSampleShift = nil
+    }
+
+    /// Pixels that were tracked beyond the committed output but not committed
+    /// yet (see `minimumCommitPixelHeight`).
+    public var pendingPixelHeight: Int {
+        guard pendingFrame != nil else { return 0 }
+        if viewportOffset > maximumViewportOffset { return viewportOffset - maximumViewportOffset }
+        if viewportOffset < minimumViewportOffset { return minimumViewportOffset - viewportOffset }
+        return 0
+    }
+
+    /// Commits the tracked-but-uncommitted tail. Call before reading
+    /// `segments` / rendering so the last partial step is not lost.
+    @discardableResult
+    public func commitPending() throws -> ScrollingFrameDisposition {
+        guard let pending = pendingFrame else { return .duplicate }
+        return try settle(
+            image: pending.image,
+            sample: pending.sample,
+            confidence: pending.confidence,
+            force: true,
+            refine: true
+        )
     }
 
     @discardableResult
@@ -168,14 +226,75 @@ public final class ScrollingImageStitcher {
         let sample = try makeSample(from: image)
 
         guard let firstImage, let previousSample else {
-            self.firstImage = image
-            self.previousSample = sample
-            accumulatedHeight = image.height
+            try installFirstFrame(image, sample: sample)
             return .firstFrame
         }
         guard image.width == firstImage.width, image.height == firstImage.height else {
             return .rejected
         }
+        let scale = Double(image.height) / Double(sample.height)
+        let preferredSampleShift = preferredPixelShift.map {
+            Int((Double($0) / scale).rounded())
+        }
+
+        // Motion prior: consecutive frames of a dense capture move by a
+        // similar amount. Searching near the previous displacement first is
+        // faster and removes most repeated-content ambiguity; the full range
+        // is only searched when the prediction fails.
+        var match: VerticalScrollMatch?
+        if let window = predictedSearchWindow(sampleHeight: sample.height) {
+            match = matcher.match(
+                previous: previousSample,
+                current: sample,
+                constraint: constraint,
+                preferredSignedShift: preferredSampleShift,
+                searchWindow: window
+            )
+        }
+        if match == nil {
+            match = matcher.match(
+                previous: previousSample,
+                current: sample,
+                constraint: constraint,
+                preferredSignedShift: preferredSampleShift
+            )
+        }
+        guard let match else {
+            lastSampleShift = nil
+            return .rejected
+        }
+        return try appendMatched(
+            image: image,
+            sample: sample,
+            match: match,
+            scale: scale,
+            force: false
+        )
+    }
+
+    /// Commits the final, settled viewport after the tracked scrollbar reaches
+    /// its end. The last scroll is commonly shorter than the regular step,
+    /// and repeated chat rows can make that small seam look ambiguous. At the
+    /// confirmed end it is safer to accept the best overlap at low
+    /// confidence so the document tail is retained for seam review.
+    @discardableResult
+    public func appendTerminalFrame(
+        _ image: CGImage,
+        preferredPixelShift: Int? = nil,
+        constraint: VerticalScrollConstraint = .downwardOnly
+    ) throws -> ScrollingFrameDisposition {
+        guard image.width > 0, image.height > 0 else {
+            throw ScrollingImageStitcherError.invalidImage
+        }
+        let sample = try makeSample(from: image)
+        guard let firstImage, let previousSample else {
+            try installFirstFrame(image, sample: sample)
+            return .firstFrame
+        }
+        guard image.width == firstImage.width, image.height == firstImage.height else {
+            return .rejected
+        }
+
         let scale = Double(image.height) / Double(sample.height)
         let preferredSampleShift = preferredPixelShift.map {
             Int((Double($0) / scale).rounded())
@@ -184,119 +303,255 @@ public final class ScrollingImageStitcher {
             previous: previousSample,
             current: sample,
             constraint: constraint,
-            preferredSignedShift: preferredSampleShift
-        ) else {
-            return .rejected
-        }
-        return appendMatched(
-            image: image,
-            sample: sample,
-            previousSample: previousSample,
-            match: match,
-            scale: scale
-        )
-    }
-
-    /// Commits the final, settled viewport after the tracked scrollbar reaches
-    /// its maximum. The last scroll is commonly shorter than the regular step,
-    /// and repeated chat rows can make that small seam look ambiguous. At the
-    /// confirmed bottom it is safer to accept the best downward overlap at low
-    /// confidence so the document tail is retained for seam review.
-    @discardableResult
-    public func appendTerminalFrame(
-        _ image: CGImage,
-        preferredPixelShift: Int? = nil
-    ) throws -> ScrollingFrameDisposition {
-        guard image.width > 0, image.height > 0 else {
-            throw ScrollingImageStitcherError.invalidImage
-        }
-        let sample = try makeSample(from: image)
-        guard let firstImage, let previousSample else {
-            self.firstImage = image
-            self.previousSample = sample
-            accumulatedHeight = image.height
-            return .firstFrame
-        }
-        guard image.width == firstImage.width, image.height == firstImage.height else {
-            return .rejected
-        }
-
-        let scale = Double(image.height) / Double(sample.height)
-        let preferredSampleShift = preferredPixelShift.map {
-            Int((Double($0) / scale).rounded())
-        }
-        guard let match = matcher.match(
-            previous: previousSample,
-            current: sample,
-            constraint: .downwardOnly,
             preferredSignedShift: preferredSampleShift,
             allowsAmbiguousMatch: true,
             minimumAcceptedConfidence: 0.05
         ) else {
-            return .rejected
+            // Nothing new can be matched; still keep whatever was tracked.
+            return try commitPending()
         }
         let terminalMatch = VerticalScrollMatch(
             signedShift: match.signedShift,
             meanAbsoluteDifference: match.meanAbsoluteDifference,
             confidence: min(match.confidence, 0.35)
         )
-        return appendMatched(
+        let disposition = try appendMatched(
             image: image,
             sample: sample,
-            previousSample: previousSample,
             match: terminalMatch,
-            scale: scale
+            scale: scale,
+            force: true
         )
+        if case .duplicate = disposition, pendingFrame != nil {
+            return try commitPending()
+        }
+        return disposition
+    }
+
+    private func installFirstFrame(_ image: CGImage, sample: GrayscaleFrame) throws {
+        firstImage = image
+        previousSample = sample
+        accumulatedHeight = image.height
+        let anchor = Anchor(sample: sample, fine: try makeFineSample(from: image), offset: 0)
+        anchorDown = anchor
+        anchorUp = anchor
+        pendingFrame = nil
+        lastSampleShift = nil
+    }
+
+    private func predictedSearchWindow(sampleHeight: Int) -> ClosedRange<Int>? {
+        guard let lastSampleShift else { return nil }
+        let slack = max(12, sampleHeight / 8)
+        // Always include zero so a viewport that stopped moving is recognised
+        // as stationary instead of being forced onto a moving candidate.
+        return (min(lastSampleShift, 0) - slack)...(max(lastSampleShift, 0) + slack)
     }
 
     private func appendMatched(
         image: CGImage,
         sample: GrayscaleFrame,
-        previousSample: GrayscaleFrame,
         match: VerticalScrollMatch,
-        scale: Double
-    ) -> ScrollingFrameDisposition {
-        guard let firstImage else { return .rejected }
+        scale: Double,
+        force: Bool
+    ) throws -> ScrollingFrameDisposition {
+        guard firstImage != nil else { return .rejected }
         if match.isDuplicate {
+            lastSampleShift = 0
             return .duplicate
         }
 
+        lastSampleShift = match.signedShift
         let signedPixelShift = Int((Double(match.signedShift) * scale).rounded())
         viewportOffset += signedPixelShift
+        previousSample = sample
+        return try settle(
+            image: image,
+            sample: sample,
+            confidence: match.confidence,
+            force: force,
+            refine: true
+        )
+    }
+
+    /// Decides what a tracked frame at `viewportOffset` contributes: nothing
+    /// (already represented), a pending tail, or a committed segment.
+    private func settle(
+        image: CGImage,
+        sample: GrayscaleFrame,
+        confidence: Double,
+        force: Bool,
+        refine: Bool
+    ) throws -> ScrollingFrameDisposition {
+        let direction: VerticalScrollDirection
+        let overshoot: Int
+        if viewportOffset > maximumViewportOffset {
+            direction = .down
+            overshoot = viewportOffset - maximumViewportOffset
+        } else if viewportOffset < minimumViewportOffset {
+            direction = .up
+            overshoot = minimumViewportOffset - viewportOffset
+        } else {
+            // The user reversed into an area that is already represented.
+            pendingFrame = nil
+            return .duplicate
+        }
+
+        let combinedConfidence = min(pendingFrame?.confidence ?? 1, confidence)
+        if !force, overshoot < max(2, minimumCommitPixelHeight) {
+            if minimumCommitPixelHeight <= 0 {
+                pendingFrame = nil
+                return .duplicate
+            }
+            pendingFrame = PendingFrame(image: image, sample: sample, confidence: combinedConfidence)
+            return .tracking(pendingPixelHeight: overshoot)
+        }
+        return try commit(
+            image: image,
+            sample: sample,
+            direction: direction,
+            confidence: combinedConfidence,
+            refine: refine
+        )
+    }
+
+    private func commit(
+        image: CGImage,
+        sample: GrayscaleFrame,
+        direction: VerticalScrollDirection,
+        confidence: Double,
+        refine: Bool
+    ) throws -> ScrollingFrameDisposition {
+        guard let firstImage else { return .rejected }
+        let scale = Double(image.height) / Double(sample.height)
+        let fine = try makeFineSample(from: image)
+        let anchor = direction == .down ? anchorDown : anchorUp
+        var stable = StableEdgeRegions(topRows: 0, bottomRows: 0)
+        if let anchor {
+            stable = matcher.stableEdges(previous: anchor.sample, current: sample)
+            let displacement = viewportOffset - anchor.offset
+            if refine,
+               anchor.fine.width == fine.width,
+               anchor.fine.height == fine.height,
+               displacement != 0,
+               abs(displacement) < Int(Double(image.height) * 0.75) {
+                // The matcher works on a vertically reduced sample, so its
+                // shift is quantised to `scale` pixels and tracking drift adds
+                // up. Re-register against the last committed frame at full
+                // vertical resolution to land on the exact pixel row.
+                let radius = min(16, Int(scale.rounded(.up)) * 3 + 2)
+                let refined = Self.refinedDisplacement(
+                    anchor: anchor.fine,
+                    current: fine,
+                    approximate: displacement,
+                    radius: radius,
+                    topMargin: max(
+                        Int((Double(stable.topRows) * scale).rounded(.up)),
+                        image.height / 20
+                    ),
+                    bottomMargin: max(
+                        Int((Double(stable.bottomRows) * scale).rounded(.up)),
+                        image.height / 10
+                    )
+                )
+                viewportOffset += refined - displacement
+            }
+        }
 
         let newPixelHeight: Int
-        if viewportOffset < minimumViewportOffset {
-            newPixelHeight = minimumViewportOffset - viewportOffset
-            minimumViewportOffset = viewportOffset
-        } else if viewportOffset > maximumViewportOffset {
+        switch direction {
+        case .down:
             newPixelHeight = viewportOffset - maximumViewportOffset
+        case .up:
+            newPixelHeight = minimumViewportOffset - viewportOffset
+        case .stationary:
+            newPixelHeight = 0
+        }
+        guard newPixelHeight >= 2 else {
+            pendingFrame = nil
+            return .duplicate
+        }
+        if direction == .down {
             maximumViewportOffset = viewportOffset
         } else {
-            // The user reversed into an area that is already represented. Keep
-            // this frame as the next matching reference, but do not duplicate it.
-            self.previousSample = sample
-            return .duplicate
+            minimumViewportOffset = viewportOffset
         }
 
-        let appendedHeight = min(image.height, max(1, newPixelHeight))
-        guard appendedHeight >= 2 else {
-            self.previousSample = sample
-            return .duplicate
-        }
-
-        let stable = matcher.stableEdges(previous: previousSample, current: sample)
+        let appendedHeight = min(image.height, newPixelHeight)
         let details = ScrollingStitchSegment(
-            direction: signedPixelShift < 0 ? .up : .down,
+            direction: direction,
             newPixelHeight: appendedHeight,
-            confidence: match.confidence,
+            confidence: confidence,
             stableTopHeight: min(image.height / 3, Int((Double(stable.topRows) * scale).rounded())),
             stableBottomHeight: min(image.height / 3, Int((Double(stable.bottomRows) * scale).rounded()))
         )
         capturedSegments.append(CapturedSegment(image: image, details: details))
         stitchSegments.append(details)
         accumulatedHeight = firstImage.height + maximumViewportOffset - minimumViewportOffset
-        self.previousSample = sample
-        return .appended(newPixelHeight: appendedHeight, confidence: match.confidence)
+        let newAnchor = Anchor(sample: sample, fine: fine, offset: viewportOffset)
+        if direction == .down {
+            anchorDown = newAnchor
+        } else {
+            anchorUp = newAnchor
+        }
+        pendingFrame = nil
+        return .appended(newPixelHeight: appendedHeight, confidence: confidence)
+    }
+
+    /// Finds the displacement (in full-resolution rows) near `approximate`
+    /// that best aligns `current` with `anchor`. Positive means `current`
+    /// shows content further down than `anchor`.
+    static func refinedDisplacement(
+        anchor: GrayscaleFrame,
+        current: GrayscaleFrame,
+        approximate: Int,
+        radius: Int,
+        topMargin: Int,
+        bottomMargin: Int
+    ) -> Int {
+        let height = anchor.height
+        let width = anchor.width
+        let sign = approximate >= 0 ? 1 : -1
+        let largestShift = abs(approximate) + radius
+        let startY = max(0, topMargin)
+        let endY = height - largestShift - max(0, bottomMargin)
+        guard radius > 0, endY - startY >= 16 else { return approximate }
+        let startX = width / 12
+        let endX = width - width / 12
+
+        var bestShift = approximate
+        var bestScore = Double.greatestFiniteMagnitude
+        for magnitude in max(1, abs(approximate) - radius)...(abs(approximate) + radius) {
+            var total = 0
+            var count = 0
+            anchor.pixels.withUnsafeBufferPointer { anchorPixels in
+                current.pixels.withUnsafeBufferPointer { currentPixels in
+                    var y = startY
+                    while y < endY {
+                        let anchorRow = (sign > 0 ? y + magnitude : y) * width
+                        let currentRow = (sign > 0 ? y : y + magnitude) * width
+                        var x = startX
+                        while x < endX {
+                            total += abs(Int(anchorPixels[anchorRow + x]) - Int(currentPixels[currentRow + x]))
+                            count += 1
+                            x += 2
+                        }
+                        y += 1
+                    }
+                }
+            }
+            guard count > 0 else { continue }
+            let score = Double(total) / Double(count)
+            let candidate = sign * magnitude
+            // Prefer the candidate closest to the estimate on (near) ties so
+            // flat or periodic content cannot drag the seam away.
+            if score < bestScore - 0.01
+                || (abs(score - bestScore) <= 0.01
+                    && abs(candidate - approximate) < abs(bestShift - approximate)) {
+                bestScore = score
+                bestShift = candidate
+            }
+        }
+        return bestShift
     }
 
     /// Advances the stitching anchor after the viewport demonstrably moved but
@@ -315,10 +570,8 @@ public final class ScrollingImageStitcher {
             throw ScrollingImageStitcherError.invalidImage
         }
         let sample = try makeSample(from: image)
-        guard let firstImage, let previousSample else {
-            self.firstImage = image
-            self.previousSample = sample
-            accumulatedHeight = image.height
+        guard let firstImage, previousSample != nil else {
+            try installFirstFrame(image, sample: sample)
             return .firstFrame
         }
         guard image.width == firstImage.width, image.height == firstImage.height else {
@@ -329,34 +582,15 @@ public final class ScrollingImageStitcher {
         let magnitude = min(maximumSafeShift, max(2, abs(requestedSignedPixelShift)))
         let signedPixelShift = requestedSignedPixelShift < 0 ? -magnitude : magnitude
         viewportOffset += signedPixelShift
-
-        let newPixelHeight: Int
-        if viewportOffset < minimumViewportOffset {
-            newPixelHeight = minimumViewportOffset - viewportOffset
-            minimumViewportOffset = viewportOffset
-        } else if viewportOffset > maximumViewportOffset {
-            newPixelHeight = viewportOffset - maximumViewportOffset
-            maximumViewportOffset = viewportOffset
-        } else {
-            self.previousSample = sample
-            return .duplicate
-        }
-
-        let appendedHeight = min(image.height, max(2, newPixelHeight))
-        let scale = Double(image.height) / Double(sample.height)
-        let stable = matcher.stableEdges(previous: previousSample, current: sample)
-        let details = ScrollingStitchSegment(
-            direction: signedPixelShift < 0 ? .up : .down,
-            newPixelHeight: appendedHeight,
+        previousSample = sample
+        lastSampleShift = nil
+        return try settle(
+            image: image,
+            sample: sample,
             confidence: 0,
-            stableTopHeight: min(image.height / 3, Int((Double(stable.topRows) * scale).rounded())),
-            stableBottomHeight: min(image.height / 3, Int((Double(stable.bottomRows) * scale).rounded()))
+            force: true,
+            refine: false
         )
-        capturedSegments.append(CapturedSegment(image: image, details: details))
-        stitchSegments.append(details)
-        accumulatedHeight = firstImage.height + maximumViewportOffset - minimumViewportOffset
-        self.previousSample = sample
-        return .appended(newPixelHeight: appendedHeight, confidence: 0)
     }
 
     public func makeImage() throws -> CGImage {
@@ -488,6 +722,27 @@ public final class ScrollingImageStitcher {
             throw ScrollingImageStitcherError.couldNotCreateCanvas
         }
         return image
+    }
+
+    /// Full vertical resolution, reduced width: used only to refine a seam to
+    /// the exact pixel row when a segment is committed.
+    func makeFineSample(from image: CGImage) throws -> GrayscaleFrame {
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: fineSampleWidth * height)
+        guard let context = CGContext(
+            data: &pixels,
+            width: fineSampleWidth,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: fineSampleWidth,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
+            throw ScrollingImageStitcherError.invalidImage
+        }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: fineSampleWidth, height: height))
+        return GrayscaleFrame(width: fineSampleWidth, height: height, pixels: pixels)
     }
 
     func makeSample(from image: CGImage) throws -> GrayscaleFrame {
