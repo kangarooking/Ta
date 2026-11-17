@@ -10,7 +10,7 @@ DeepSeek Harness ──> dsh-ta Plugin ─┘
 
 ## 1. 前置条件
 
-1. 安装 Ta v1.0.1 或更高版本，并把「拓.app」放入 `/Applications`。
+1. 安装 Ta v1.1.0 或更高版本，并把「拓.app」放入 `/Applications`。
 2. 打开拓，在“设置 → 权限”中允许屏幕录制。
 3. 打开“设置 → Agent”，确认“允许本机 Agent 调用拓”已开启。
 4. 如需 AI 识图、远程 OCR 或翻译，先在拓中配置模型。Agent 无法读取 Keychain 中的 API Key。
@@ -47,12 +47,12 @@ ta status --json
 
 ## 3. 手动安装 `ta` CLI
 
-从 GitHub Release 下载 `Ta-CLI-1.0.1-macOS-universal.tar.gz`，然后安装到用户目录：
+从 GitHub Release 下载 `Ta-CLI-1.1.0-macOS-universal.tar.gz`，然后安装到用户目录：
 
 ```bash
-tar -xzf Ta-CLI-1.0.1-macOS-universal.tar.gz
+tar -xzf Ta-CLI-1.1.0-macOS-universal.tar.gz
 mkdir -p "$HOME/.local/bin"
-install -m 755 ta-cli-1.0.1/bin/ta "$HOME/.local/bin/ta"
+install -m 755 ta-cli-1.1.0/bin/ta "$HOME/.local/bin/ta"
 export PATH="$HOME/.local/bin:$PATH"
 ta status --json
 ```
@@ -62,9 +62,9 @@ ta status --json
 ```json
 {
   "name": "ta",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "bridgeProtocol": 1,
-  "requiresTaApp": ">=1.0.1",
+  "requiresTaApp": ">=1.1.0",
   "minimumMacOS": "14.0",
   "architectures": ["arm64", "x86_64"]
 }
@@ -115,12 +115,12 @@ Agent 应始终检查 JSON 顶层的 `ok`。图片命令还必须确认 `artifac
 
 ## 4. 手动安装 Ta Agent Skill
 
-从 Release 下载并解压 `Ta-Agent-Skill-1.0.1.zip`。Skill 不重复实现截图算法，它负责教 Agent 选择正确的 `ta` 命令、验证结果并遵守隐私边界。
+从 Release 下载并解压 `Ta-Agent-Skill-1.1.0.zip`。Skill 不重复实现截图算法，它负责教 Agent 选择正确的 `ta` 命令、验证结果并遵守隐私边界。
 
 Codex 示例：
 
 ```bash
-unzip Ta-Agent-Skill-1.0.1.zip
+unzip Ta-Agent-Skill-1.1.0.zip
 mkdir -p "$HOME/.codex/skills"
 ditto ta "$HOME/.codex/skills/ta"
 ```
@@ -140,7 +140,7 @@ ta status --json
 `dsh-ta` 是原生 Cordis Plugin + Bundle，不是 MCP 配置别名。它需要 DeepSeek Harness `0.1.0-rc.7` 或更高版本，以及 Node.js `22.19.0` 或更高版本。
 
 ```bash
-dsh plugin --profile web add ./dsh-ta-1.0.1.tgz
+dsh plugin --profile web add ./dsh-ta-1.1.0.tgz
 dsh --profile web --dump-config
 ```
 
@@ -248,15 +248,15 @@ dsh plugin --profile web remove dsh-ta
 ## 8. 从源码生成发布包
 
 ```bash
-./scripts/package-ta-cli.sh 1.0.1
-./scripts/package-ta-skill.sh 1.0.1
-TA_NODE_BIN=/path/to/node ./scripts/package-dsh-ta.sh 1.0.1
+./scripts/package-ta-cli.sh 1.1.0
+./scripts/package-ta-skill.sh 1.1.0
+TA_NODE_BIN=/path/to/node ./scripts/package-dsh-ta.sh 1.1.0
 ```
 
 完整发布脚本会同时生成 App DMG/ZIP、CLI、Skill、Harness TGZ 和统一校验文件：
 
 ```bash
-./scripts/package-release.sh 1.0.1
+./scripts/package-release.sh 1.1.0
 ```
 
-最终文件位于 `artifacts/release/v1.0.1/`，并全部写入 `SHA256SUMS.txt`。
+最终文件位于 `artifacts/release/v1.1.0/`，并全部写入 `SHA256SUMS.txt`。

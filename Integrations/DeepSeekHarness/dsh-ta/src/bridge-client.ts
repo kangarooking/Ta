@@ -36,7 +36,7 @@ export class TaBridgeClient {
       requestId: options.requestId ?? createRequestId(),
       method,
       params,
-      client: { name: 'dsh-ta', version: '1.0.1' },
+      client: { name: 'dsh-ta', version: '1.1.0' },
     }
     const timeoutMs = options.timeoutMs ?? this.config.timeoutMs
     try {

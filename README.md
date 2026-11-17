@@ -10,7 +10,7 @@
 [![Platform: macOS 14+](https://img.shields.io/badge/macOS-14%2B-1A1A1A.svg)](https://www.apple.com/macos/)
 [![Platform: Windows 10 2004+](https://img.shields.io/badge/Windows-10%202004%2B-1A1A1A.svg)](./windows)
 [![Swift: 6.2](https://img.shields.io/badge/Swift-6.2-F05138.svg)](https://www.swift.org/)
-[![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1-C98B2E.svg)](https://github.com/kangarooking/Ta/releases/tag/v1.0.1)
+[![Release: v1.1.0](https://img.shields.io/badge/Release-v1.1.0-C98B2E.svg)](https://github.com/kangarooking/Ta/releases/tag/v1.1.0)
 
 **AI 原生截图工具：截图、取字、AI 识图、翻译、长截图、钉图与标注，一步完成。**
 
@@ -172,7 +172,7 @@ ScreenCaptureKit 捕获（排除 Ta 自身窗口）
 
 ### 下载安装包
 
-[**下载 Ta v1.0.1（macOS 通用版 DMG）**](https://github.com/kangarooking/Ta/releases/latest/download/Ta-1.0.1-macOS-universal.dmg)
+[**下载 Ta v1.1.0（macOS 通用版 DMG）**](https://github.com/kangarooking/Ta/releases/latest/download/Ta-1.1.0-macOS-universal.dmg)
 
 安装包同时支持 Apple Silicon 与 Intel Mac。打开 DMG 后，把「拓」拖入 `Applications` 即可。当前版本尚未完成 Apple notarization；首次启动请在 Finder 中按住 Control 点击「拓」，选择“打开”，再确认一次。
 
@@ -274,7 +274,7 @@ Ta/
 
 ## 当前状态
 
-Ta v1.0.1 是当前公开版本，提供同时支持 Apple Silicon 与 Intel Mac 的通用 DMG 和 ZIP。当前发布包尚未完成 Apple notarization，因此首次启动需要在 Finder 中按住 Control 点击 App 并选择“打开”。
+Ta v1.1.0 是当前公开版本，提供同时支持 Apple Silicon 与 Intel Mac 的通用 DMG 和 ZIP。当前发布包尚未完成 Apple notarization，因此首次启动需要在 Finder 中按住 Control 点击 App 并选择“打开”。
 
 已知限制：
 
@@ -282,7 +282,7 @@ Ta v1.0.1 是当前公开版本，提供同时支持 Apple Silicon 与 Intel Mac
 - 长截图已具备自动拼接与接缝修正，但持续动画、视频、半透明浮层和大幅重排页面仍可能需要人工调整。
 - 图片翻译使用本地遮盖和重绘；复杂纹理、渐变、阴影、竖排文字和极密集排版可能留下覆盖痕迹。
 - PaddleOCR 公开仓库包含增强包构建定义，不提交体积较大的本地构建产物。
-- v1.0.1 使用 Apple Development 签名；Developer ID 签名和 Apple notarization 仍在推进中。
+- v1.1.0 使用 Apple Development 签名；Developer ID 签名和 Apple notarization 仍在推进中。
 
 ## 文档
 

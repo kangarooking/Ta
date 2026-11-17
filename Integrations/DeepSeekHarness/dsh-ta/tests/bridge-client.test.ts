@@ -52,7 +52,7 @@ test('Bridge client preserves the four-byte frame and request envelope', async (
     requestId: 'req-1',
     method: 'system.status',
     params: {},
-    client: { name: 'dsh-ta', version: '1.0.1' },
+    client: { name: 'dsh-ta', version: '1.1.0' },
   })
 })
 

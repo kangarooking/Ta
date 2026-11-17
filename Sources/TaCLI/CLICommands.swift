@@ -91,7 +91,7 @@ struct CLIRunner: Sendable {
             requestID: requestID,
             method: method,
             params: params,
-            client: AgentClientInfo(name: "ta-cli", version: "1.0.1")
+            client: AgentClientInfo(name: "ta-cli", version: "1.1.0")
         )
         let client = TaBridgeClient(socketURL: invocation.socketURL, timeout: invocation.timeout)
         do {

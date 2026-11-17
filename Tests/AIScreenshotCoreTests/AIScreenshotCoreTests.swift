@@ -4,7 +4,7 @@ import AppKit
 
 final class AIScreenshotCoreTests: XCTestCase {
     func testVersionIsExposed() {
-        XCTAssertEqual(AIScreenshotCore.version, "1.0.1")
+        XCTAssertEqual(AIScreenshotCore.version, "1.1.0")
     }
 
     func testCaptureJobRejectsInvalidTransition() {

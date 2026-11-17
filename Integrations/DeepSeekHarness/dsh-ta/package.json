@@ -1,6 +1,6 @@
 {
   "name": "dsh-ta",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Native DeepSeek Harness tools for Ta screen capture and image intelligence",
   "type": "module",
   "main": "./lib/index.js",

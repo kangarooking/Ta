@@ -5,7 +5,7 @@ Native DeepSeek Harness Cordis tools for the Ta macOS screenshot app. The bundle
 Requires DeepSeek Harness `0.1.0-rc.7` or newer. Cordis, Tool Runtime, and Attachment Store are supplied by the Harness installation, while this package keeps only its schema dependency in the distributable bundle.
 
 ```bash
-dsh plugin --profile web add ./dsh-ta-1.0.1.tgz
+dsh plugin --profile web add ./dsh-ta-1.1.0.tgz
 dsh --profile web --dump-config
 ```
 
