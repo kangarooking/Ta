@@ -50,7 +50,7 @@ final class PersistentOCRWorker: @unchecked Sendable {
     static let shared = PersistentOCRWorker()
 
     private let queue = DispatchQueue(label: "app.ai-screenshot.ocr-worker", qos: .userInitiated)
-    private let idleTimeout: TimeInterval
+    private var idleTimeout: TimeInterval
     private var process: Process?
     private var inputHandle: FileHandle?
     private var outputHandle: FileHandle?
@@ -123,6 +123,24 @@ final class PersistentOCRWorker: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in self?.stopSync() }
+    }
+
+    /// Applies a new idle-release timeout, rescheduling the pending stop when
+    /// the worker is already running. A timeout of zero (or below) switches
+    /// the worker into resident mode: it stays alive until `stop()` is called.
+    func setIdleTimeout(_ timeout: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.idleTimeout = max(0, timeout)
+            if self.process != nil {
+                self.scheduleIdleStop()
+            }
+        }
+    }
+
+    /// Test hook: reports whether the OCR subprocess is currently alive.
+    var isProcessRunning: Bool {
+        queue.sync { process?.isRunning ?? false }
     }
 
     private func recognizeSync(
@@ -289,6 +307,9 @@ final class PersistentOCRWorker: @unchecked Sendable {
 
     private func scheduleIdleStop() {
         activityGeneration += 1
+        // Bumping the generation also cancels any pending stop scheduled
+        // under a previous finite timeout.
+        guard idleTimeout > 0 else { return }
         let expectedGeneration = activityGeneration
         queue.asyncAfter(deadline: .now() + idleTimeout) { [weak self] in
             guard let self, self.activityGeneration == expectedGeneration else { return }
